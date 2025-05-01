@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=64.0", "setuptools-scm>=8"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools_scm]
+
+[project]
+name = "genlm-tokenization"
+dynamic = ["version"]
+description = "Tokenization utilities for GenLM"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = []
+dependencies = [
+    "genlm-backend>=0.1.0",
+]
+
+[project.optional-dependencies]
+test = [
+    "coverage",
+    "pytest",
+    "pytest-benchmark",
+    "pytest-asyncio",
+    "pytest-cov",
+]
+docs = [
+    "mkdocs",
+    "mkdocstrings[python]",
+    "mkdocs-material",
+    "mkdocs-gen-files",
+    "mkdocs-literate-nav",
+    "mkdocs-section-index",
+]
+
+[tool.setuptools.packages.find]
+include = ["genlm", "genlm/tokenization"]
