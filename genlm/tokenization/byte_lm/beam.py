@@ -30,6 +30,9 @@ class ByteBeam(ByteLM):
         """
         Get the beam for the given context of bytes.
 
+        Input:
+            qs (bytes): Byte context.
+
         Returns:
             (list[Bundle]): A list of bundles of size at most K representing the beam.
         """
@@ -73,6 +76,9 @@ class ByteBeam(ByteLM):
     async def p_next(self, context):
         """
         Get the probability of the next byte.
+
+        Input:
+            context (bytes): Byte context.
 
         Returns:
             (Chart): A probability distribution over the next byte.
