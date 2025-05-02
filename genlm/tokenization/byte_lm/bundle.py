@@ -52,7 +52,7 @@ class Bundle:
 
     async def extend(self):
         """
-        Extend the bundle by one token if it is at a leaf token.
+        Extend the bundle by one token if it is at a leaf (EOT).
 
         Returns:
             (Bundle|None): A new bundle with the extended key, mass, and weight, or None if the bundle is not at a leaf.
