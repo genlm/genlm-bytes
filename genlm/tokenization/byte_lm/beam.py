@@ -94,7 +94,7 @@ class ByteBeam(ByteLM):
             q = b.p_next()
             ppath = np.exp(b.weight - Z)
             for k in q:
-                if k:  # k is a byte.
+                if k is not None:  # k is a byte.
                     Q[k] += ppath * q[k]
 
         bs = await asyncio.gather(*[b.extend() for b in beam])
@@ -103,7 +103,7 @@ class ByteBeam(ByteLM):
                 q = b.p_next()
                 ppath = np.exp(b.weight - Z)
                 for k in q:
-                    if k:  # k is a byte.
+                    if k is not None:  # k is a byte.
                         Q[k] += ppath * q[k]
 
         return Q
