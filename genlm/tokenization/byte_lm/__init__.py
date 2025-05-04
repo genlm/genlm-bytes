@@ -1,5 +1,5 @@
 from .beam import ByteBeam
-from .bundle import Bundle
-from .lm import ByteLM
+from .trie_state import TrieState
+from .lm import ByteLM, StateLM
 
-__all__ = ["ByteBeam", "Bundle", "ByteLM"]
+__all__ = ["ByteBeam", "TrieState", "ByteLM", "StateLM"]

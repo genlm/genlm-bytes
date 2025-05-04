@@ -1,7 +1,9 @@
 import numpy as np
 import pandas as pd
 
-from arsenal.colors import colors
+from collections import OrderedDict
+
+from arsenal import colors
 
 
 def logsumexp(arr):
@@ -190,3 +192,70 @@ class Chart(dict):
             m = abs(self[x] - other[x])
             rows.append(dict(key=x, self=self[x], other=other[x], metric=m))
         return pd.DataFrame(rows)
+
+
+class LRUCache:
+    """A cache that evicts the least recently used item when the cache is full."""
+
+    def __init__(self, cache_size=float("inf")):
+        """
+        Initialize the cache.
+
+        Args:
+            cache_size (int): The maximum number of items to store in the cache.
+        """
+        self.cache_size = cache_size
+        self.cache = OrderedDict()
+
+    def get(self, key):
+        """
+        Get an object for a given key, creating and caching it if necessary.
+
+        Args:
+            key (any): The key to retrieve.
+
+        Returns:
+            any: The cached or newly created object.
+        """
+        if key in self.cache:
+            self.cache.move_to_end(key)
+            return self.cache[key]
+
+        return
+
+    def set(self, key, obj):
+        """
+        Set an object for a given key.
+        """
+        self.cache[key] = obj
+
+        if len(self.cache) > self.cache_size:
+            old_key, old_obj = self.cache.popitem(last=False)
+            self.cleanup(old_key, old_obj)
+
+    def __contains__(self, key):
+        """
+        Check if a key exists in the cache.
+
+        Args:
+            key (any): The key to check.
+
+        Returns:
+            bool: True if key is in the cache, False otherwise.
+        """
+        return key in self.cache
+
+    def __getitem__(self, key):
+        """Alias for get()."""
+        obj = self.get(key)
+        if obj is None:
+            raise KeyError(key)
+        return obj
+
+    def __setitem__(self, key, obj):
+        """Alias for set()."""
+        self.set(key, obj)
+
+    @property
+    def keys(self):
+        return list(self.cache.keys())
