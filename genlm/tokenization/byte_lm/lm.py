@@ -61,3 +61,6 @@ class StateLM:
     def __repr__(self):
         context = [self.llm.byte_vocab[x] for x in self.context]
         return f"StateLM(context={context})"
+
+    def clone(self):
+        return StateLM(self.llm, self.context.copy())

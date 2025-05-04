@@ -16,17 +16,17 @@ class TrieState:
         self.parent = parent
         self.root = self.trie.trie.root
         self._extend = _extend
-
         self.children = self.trie.trie.children
 
     @classmethod
     async def initial(cls, lm, trie):
         lm_state = StateLM.initial(lm)
+        mass = np.log(await trie.weight_sum(torch.exp(await lm_state.logp_next())))
         return cls(
             trie=trie,
             node=trie.trie.root,
             lm_state=lm_state,
-            mass=np.log(await trie.weight_sum(torch.exp(await lm_state.logp_next()))),
+            mass=mass,
             weight=0,
             parent=None,
         )
@@ -81,6 +81,8 @@ class TrieState:
             await self.trie.weight_sum(torch.exp(await lm_state.logp_next()))
         )
 
+        # We sometimes call extend in logp_next. This
+        # helps us avoid recomputing the same state twice.
         self._extend = TrieState(
             lm_state=lm_state,
             trie=self.trie,
@@ -98,7 +100,9 @@ class TrieState:
     @cached_property
     def logp_next(self):
         logZ = self.mass[self.node]
-        return Chart(0, {a: self.mass[i] - logZ for a, i in self.actions().items()})
+        return Chart(
+            -np.inf, {a: self.mass[i] - logZ for a, i in self.actions().items()}
+        )
 
     @property
     def partial(self):
@@ -106,5 +110,19 @@ class TrieState:
 
     def __repr__(self):
         return f"TrieState(partial={self.partial}, weight={self.weight}, lm_state={self.lm_state})"
+
+    def clone(self):
+        return TrieState(
+            lm_state=self.lm_state.clone(),
+            trie=self.trie,
+            node=self.node,
+            mass=self.mass,
+            weight=self.weight,
+            parent=self.parent,
+            _extend=self._extend.clone() if self._extend else None,
+        )
+
+    async def cleanup(self):
+        self.trie.cleanup()
 
     # TODO: add viz methods

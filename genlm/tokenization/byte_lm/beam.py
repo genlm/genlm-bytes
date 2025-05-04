@@ -1,11 +1,10 @@
 import asyncio
 import numpy as np
-from genlm.backend import AsyncTokenCharacterTrie
 from genlm.backend.tokenization.bytes import get_byte_vocab
 
 from .lm import ByteLM
 from .trie_state import TrieState
-from ..util import Chart, LRUCache
+from ..util import Chart, LRUCache, load_async_trie
 
 
 class ByteBeam(ByteLM):
@@ -21,21 +20,12 @@ class ByteBeam(ByteLM):
         """
         self.llm = llm
         self.K = K
-        token_V = get_byte_vocab(self.llm.tokenizer)
-        self.async_trie = AsyncTokenCharacterTrie.from_vocab(token_V)
 
-        lookup = {}
-        for i, v in enumerate(token_V):
-            if v in lookup:
-                raise ValueError(
-                    f"Token {v!r} maps to multiple token_ids ({lookup[v]}, {i})."
-                )
-            lookup[v] = i
-
-        self.async_trie.lookup = lookup
+        decode = get_byte_vocab(self.llm.tokenizer)
+        self.async_trie = load_async_trie(decode)
         self.beam_cache = LRUCache(beam_cache_size)
 
-        super().__init__(set(b"".join(token_V)))
+        super().__init__(set(b"".join(decode)))
 
     async def beam(self, qs):
         """

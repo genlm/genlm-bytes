@@ -259,3 +259,33 @@ class LRUCache:
     @property
     def keys(self):
         return list(self.cache.keys())
+
+
+def bern(p):
+    return {True: p, False: 1 - p}
+
+
+def load_async_trie(decode):
+    from genlm.backend import AsyncTokenCharacterTrie
+
+    async_trie = AsyncTokenCharacterTrie.from_vocab(decode)
+
+    lookup = {}
+    for i, v in enumerate(decode):
+        if v in lookup:
+            raise ValueError(
+                f"Token {v!r} maps to multiple token_ids ({lookup[v]}, {i})."
+            )
+        lookup[v] = i
+
+    async_trie.lookup = lookup
+
+    return async_trie
+
+
+def unflatten(d):
+    if len(d) == 0:
+        return []
+    if len(d) == 1:
+        return [d[0]]
+    return [*unflatten(d[0]), d[1]]

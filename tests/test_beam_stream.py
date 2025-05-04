@@ -1,6 +1,6 @@
 import pytest
 from genlm.backend import load_model_by_name
-from genlm.tokenization.byte_lm.beam import ByteBeam
+from genlm.tokenization.byte_lm.stream import BeamByteStream
 
 
 @pytest.fixture(scope="module")
@@ -10,28 +10,24 @@ def llm():
 
 @pytest.mark.asyncio
 async def test_basics(llm):
-    K = 5
-    qs = b"An apple a day keeps "
-    C = ByteBeam(llm, K=K)
+    state = await BeamByteStream.initial(llm, K=5)
 
     try:
-        beam = await C.beam(qs)
-        print(beam)
-        result = await C.greedy(qs, steps=20)
+        result = await state.greedy(b"An apple a day keeps ", steps=20)
         print(result)
     finally:
-        await C.cleanup()
+        await state.cleanup()
 
 
 @pytest.mark.asyncio
 async def test_generate(llm):
-    K = 5
-    qs = b"An apple a day keeps the "
-    M = ByteBeam(llm, K=K)
+    state = await BeamByteStream.initial(llm, K=5)
 
     try:
-        output = await M.greedy(qs, steps=12, verbose=True)
+        output = await state.greedy(
+            b"An apple a day keeps the ", steps=12, verbose=True
+        )
         print(repr(output))
         assert output == b"An apple a day keeps the doctor away."
     finally:
-        await M.cleanup()
+        await state.cleanup()
