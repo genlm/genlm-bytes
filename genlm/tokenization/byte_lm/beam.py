@@ -14,9 +14,13 @@ from .lm import StatefulByteLM
 
 class ByteBeamState(StatefulByteLM):
     def __init__(self, states, K, V, extend_threshold=None, context=()):
+        if not states:
+            raise ValueError("Beam state must contain at least one state.")
+
         self.states = sorted(states, key=lambda b: -b.weight)
         self.K = K
         self.extend_threshold = extend_threshold
+
         super().__init__(V, context)
 
     @classmethod
@@ -137,29 +141,30 @@ class ByteBeamState(StatefulByteLM):
         Returns:
             (Chart): The log probability distribution of the next byte.
         """
-        Ps = []
         Q = Chart(-np.inf)
         extensions = []
         for state in self.states:
             logq = state.logp_next
             logp = state.weight
-            Ps.append(logp)
             for k in logq:
                 if k is not None:
                     Q[k] = np.logaddexp(Q[k], logp + logq[k])
-            extensions.append(state.extend())
+
+            if state.has_EOT():
+                extensions.append(state.extend())
 
         # Handle Nones that were filtered above.
         extended = await asyncio.gather(*extensions)
         for state in extended:
-            if state:  # EOT is available.
-                logq = state.logp_next
-                logp = state.weight
-                for k in logq:
-                    assert k is not None
-                    Q[k] = np.logaddexp(Q[k], logp + logq[k])
+            logq = state.logp_next
+            logp = state.weight
+            for k in logq:
+                assert k is not None
+                Q[k] = np.logaddexp(Q[k], logp + logq[k])
 
-        Z = logsumexp(Ps)  # Z = logsumexp(list(Q.values())) # This is equivalent.
+        Z = logsumexp(
+            [s.weight for s in self.states]
+        )  # Z = logsumexp(list(Q.values())) # This is equivalent.
         for k in Q:
             Q[k] = Q[k] - Z
 

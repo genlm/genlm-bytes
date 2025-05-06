@@ -32,6 +32,9 @@ docs = [
     "mkdocs-literate-nav",
     "mkdocs-section-index",
 ]
+bench = [
+    "datasets",
+]
 
 [tool.setuptools.packages.find]
 include = ["genlm", "genlm/tokenization"]
