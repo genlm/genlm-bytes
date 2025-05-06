@@ -96,21 +96,13 @@ class ByteBeamState(StatefulByteLM):
                     new_state.parent = state
                     candidates.append(new_state)
 
-        if verbose:
-            print()
-            print(
-                colors.bold % "Current context: ",
-                colors.green % repr(bytes(unflatten(self.context))),
-            )
-            print(colors.bold % "Current byte: ", colors.blue % repr(q))
-            print(colors.bold % "Candidates:")
-            for i, state in enumerate(sorted(candidates, key=lambda b: -b.weight)):
-                if i >= self.K:
-                    print(f"\033[38;5;247m{repr(state)}\033[0m")
-                else:
-                    print(state)
+        new_state = self.spawn(candidates, new_context=(self.context, q))
 
-        return self.spawn(candidates, new_context=(self.context, q))
+        if verbose:
+            print(repr(new_state))
+            print()
+
+        return new_state
 
     def prune(self):
         """Prune the beam to the top K states."""
@@ -163,3 +155,24 @@ class ByteBeamState(StatefulByteLM):
     async def cleanup(self):
         """Async clean up method."""
         await asyncio.gather(*[s.cleanup() for s in self.states])
+
+    def __repr__(self):
+        return (
+            colors.bold % "Current context: "
+            + colors.green % repr(bytes(unflatten(self.context)))
+            + "\n"
+            + colors.bold % "Candidates:"
+            + "\n"
+            + (
+                "\n".join(
+                    [
+                        f"\033[38;5;247m{repr(state)}\033[0m"
+                        if i >= self.K
+                        else repr(state)
+                        for i, state in enumerate(
+                            sorted(self.states, key=lambda b: -b.weight)
+                        )
+                    ]
+                )
+            )
+        )

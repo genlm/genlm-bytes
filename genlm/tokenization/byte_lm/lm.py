@@ -70,7 +70,7 @@ class StatefulByteLM(ABC):
         for _ in range(steps):
             logp = await state.logp_next
             if verbose:
-                print(state, logp.top(5))
+                print(logp.top(5))
             x = logp.argmax()
             state = await state.step(x, verbose)
             state = state.prune()
@@ -81,14 +81,11 @@ class StatefulByteLM(ABC):
         for _ in range(steps):
             logp = await state.logp_next
             if verbose:
-                print(state, logp.top(5))
+                print(logp.top(5))
             x = draw(logp.map_values(np.exp))
             state = await state.step(x, verbose)
             state = state.prune()
         return bytes(unflatten(state.context))
-
-    def __repr__(self):
-        return f"{bytes(unflatten(self.context))}"
 
     async def cleanup(self):
         pass

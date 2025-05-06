@@ -32,6 +32,10 @@ async def test_generate(llm):
         )
         print(repr(output))
         assert output == b"An apple a day keeps the doctor away."
+        output = await state.sample(
+            b"An apple a day keeps the ", steps=12, verbose=True
+        )
+        print(repr(output))
     finally:
         await state.cleanup()
 
