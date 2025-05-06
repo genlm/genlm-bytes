@@ -14,7 +14,7 @@ from .lm import StatefulByteLM
 
 class ByteBeamState(StatefulByteLM):
     def __init__(self, states, K, V, extend_threshold=None, context=()):
-        self.states = states
+        self.states = sorted(states, key=lambda b: -b.weight)
         self.K = K
         self.extend_threshold = extend_threshold
         super().__init__(V, context)
@@ -71,42 +71,53 @@ class ByteBeamState(StatefulByteLM):
         candidates = []
         extensions = []
 
-        # Try to add curr_byte to all states.
-        for state in self.states:
-            new_state = state << q
-            if new_state:  # curr_byte can come next.
-                candidates.append(new_state)
-                if (
-                    self.extend_threshold is not None
-                    and state.has_EOT()
-                    and np.exp(
-                        new_state.weight - (state.weight + state.logp_next[None])
-                    )
-                    < self.extend_threshold
-                ):
-                    continue
-            extensions.append(state.extend())
-
-        # Try to extend states.
-        extended = await asyncio.gather(*extensions)
-        for state in extended:
-            if state:  # EOT was available.
-                new_state = state << q
-                if new_state:  # curr_byte can come next.
-                    new_state.parent = state
-                    candidates.append(new_state)
-
-        new_state = self.spawn(candidates, new_context=(self.context, q))
-
         if verbose:
-            print(repr(new_state))
             print()
 
-        return new_state
+        for state in self.states:
+            # Filter for curr_byte.
+            if new_state := state << q:
+                candidates.append(new_state)
+                if verbose:
+                    print(colors.bold % "Filtered:", repr(new_state))
+            # Maybe extend.
+            if self.maybe_extend(state, q):
+                extensions.append(state.extend())
+
+        # Extend concurrently.
+        for state in await asyncio.gather(*extensions):
+            if new_state := state << q:
+                new_state.parent = state
+                candidates.append(new_state)
+                if verbose:
+                    print(colors.bold % "Ext+Filt:", repr(new_state))
+
+        return self.spawn(candidates, new_context=(self.context, q))
 
     def prune(self):
         """Prune the beam to the top K states."""
         return self.spawn(sorted(self.states, key=lambda b: -b.weight)[: self.K])
+
+    def maybe_extend(self, state, q):
+        """Determine whether to extend the state with an End-of-Token (EOT)."""
+
+        if not state.has_EOT():
+            return False
+
+        if q not in state.children[state.root]:
+            return False
+
+        if self.extend_threshold is None:
+            return True
+
+        children = state.children[state.node]
+        if q not in children:
+            return True
+
+        return (
+            np.exp(state.mass[children[q]] - state.mass[children[None]])
+            < self.extend_threshold
+        )
 
     def spawn(self, states, new_context=None):
         """Spawn a new beam state from the current one."""
@@ -128,16 +139,18 @@ class ByteBeamState(StatefulByteLM):
         """
         Ps = []
         Q = Chart(-np.inf)
+        extensions = []
         for state in self.states:
             logq = state.logp_next
             logp = state.weight
+            Ps.append(logp)
             for k in logq:
                 if k is not None:
                     Q[k] = np.logaddexp(Q[k], logp + logq[k])
-            Ps.append(logp)
+            extensions.append(state.extend())
 
         # Handle Nones that were filtered above.
-        extended = await asyncio.gather(*[s.extend() for s in self.states])
+        extended = await asyncio.gather(*extensions)
         for state in extended:
             if state:  # EOT is available.
                 logq = state.logp_next
@@ -165,14 +178,10 @@ class ByteBeamState(StatefulByteLM):
             + "\n"
             + (
                 "\n".join(
-                    [
-                        f"\033[38;5;247m{repr(state)}\033[0m"
-                        if i >= self.K
-                        else repr(state)
-                        for i, state in enumerate(
-                            sorted(self.states, key=lambda b: -b.weight)
-                        )
-                    ]
+                    f"\033[38;5;247m{repr(state)}\033[0m"
+                    if i >= self.K
+                    else repr(state)
+                    for i, state in enumerate(self.states)
                 )
             )
         )

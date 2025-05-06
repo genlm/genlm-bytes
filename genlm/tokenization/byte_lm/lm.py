@@ -69,8 +69,6 @@ class StatefulByteLM(ABC):
         state = await self.consume(list(prompt), verbose)
         for _ in range(steps):
             logp = await state.logp_next
-            if verbose:
-                print(logp.top(5))
             x = logp.argmax()
             state = await state.step(x, verbose)
             state = state.prune()
@@ -80,8 +78,6 @@ class StatefulByteLM(ABC):
         state = await self.consume(list(prompt), verbose)
         for _ in range(steps):
             logp = await state.logp_next
-            if verbose:
-                print(logp.top(5))
             x = draw(logp.map_values(np.exp))
             state = await state.step(x, verbose)
             state = state.prune()

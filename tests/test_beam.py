@@ -40,9 +40,10 @@ async def test_generate(llm):
         await state.cleanup()
 
 
+@pytest.mark.parametrize("extend_threshold", [None, 0.1, 10])
 @pytest.mark.asyncio
-async def test_async_batching(llm):
-    state = await ByteBeamState.initial(llm, K=5)
+async def test_async_batching(llm, extend_threshold):
+    state = await ByteBeamState.initial(llm, K=5, extend_threshold=extend_threshold)
 
     try:
         # warm up
@@ -70,9 +71,10 @@ async def test_async_batching(llm):
         await state.cleanup()
 
 
+@pytest.mark.parametrize("extend_threshold", [None, 0.1, 10])
 @pytest.mark.asyncio
-async def test_weights(llm):
-    state = await ByteBeamState.initial(llm, K=5)
+async def test_weights(llm, extend_threshold):
+    state = await ByteBeamState.initial(llm, K=5, extend_threshold=extend_threshold)
 
     try:
         qs = b"An apple a day keeps the"

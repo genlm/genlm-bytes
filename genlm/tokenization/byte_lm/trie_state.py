@@ -101,6 +101,9 @@ class TrieState:
     def has_EOT(self):
         return None in self.children[self.node]
 
+    def get_EOT(self):
+        return self.children[self.node].get(None)
+
     @cached_property
     def logp_next(self):
         logZ = self.mass[self.node]
@@ -114,7 +117,7 @@ class TrieState:
 
     def __repr__(self):
         return f"{self.weight:.2f}: {self.lm_state}" + (
-            colors.green % ("|" + str(self.partial))
+            colors.green % ("|" + repr(bytes(self.partial)))
         )
 
     def clone(self):
