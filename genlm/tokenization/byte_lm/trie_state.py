@@ -1,8 +1,8 @@
 import torch
 import numpy as np
 from functools import cached_property
-
-from .lm import StateLM
+from arsenal import colors
+from .lm import StatefulTokenizedLM
 from ..util import Chart
 
 
@@ -20,8 +20,8 @@ class TrieState:
 
     @classmethod
     async def initial(cls, lm, trie):
-        lm_state = StateLM.initial(lm)
-        mass = np.log(await trie.weight_sum(torch.exp(await lm_state.logp_next())))
+        lm_state = StatefulTokenizedLM.initial(lm)
+        mass = np.log(await trie.weight_sum(torch.exp(await lm_state.logp_next)))
         return cls(
             trie=trie,
             node=trie.trie.root,
@@ -52,12 +52,13 @@ class TrieState:
         """
         if curr_byte not in self.children[self.node]:
             return
+        next_node = self.children[self.node][curr_byte]
         return TrieState(
             lm_state=self.lm_state,
             trie=self.trie,
-            node=self.children[self.node][curr_byte],
+            node=next_node,
             mass=self.mass,
-            weight=self.weight,
+            weight=self.weight + self.mass[next_node] - self.mass[self.node],
             parent=self,
         )
 
@@ -78,10 +79,10 @@ class TrieState:
         next_tok = self.trie.trie.leaf2word[eot_node]
         lm_state = self.lm_state << self.trie.lookup[next_tok]
         new_mass = np.log(
-            await self.trie.weight_sum(torch.exp(await lm_state.logp_next()))
+            await self.trie.weight_sum(torch.exp(await lm_state.logp_next))
         )
 
-        # We sometimes call extend in logp_next. This
+        # We sometimes call extend in logp_next and then again in extend. This
         # helps us avoid recomputing the same state twice.
         self._extend = TrieState(
             lm_state=lm_state,
@@ -97,6 +98,9 @@ class TrieState:
     def actions(self):
         return self.children[self.node]
 
+    def has_EOT(self):
+        return None in self.children[self.node]
+
     @cached_property
     def logp_next(self):
         logZ = self.mass[self.node]
@@ -109,7 +113,9 @@ class TrieState:
         return self.trie.trie.node2prefix[self.node]
 
     def __repr__(self):
-        return f"TrieState(partial={self.partial}, weight={self.weight}, lm_state={self.lm_state})"
+        return f"{self.weight:.2f}: {self.lm_state}" + (
+            colors.green % ("|" + str(self.partial))
+        )
 
     def clone(self):
         return TrieState(

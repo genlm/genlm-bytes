@@ -1,5 +1,5 @@
-from .beam import ByteBeam
+from .beam import ByteBeamState
 from .trie_state import TrieState
-from .lm import ByteLM, StateLM
+from .lm import StatefulTokenizedLM
 
-__all__ = ["ByteBeam", "TrieState", "ByteLM", "StateLM"]
+__all__ = ["ByteBeamState", "TrieState", "StatefulTokenizedLM"]
