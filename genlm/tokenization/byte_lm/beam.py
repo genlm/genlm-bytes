@@ -75,23 +75,20 @@ class ByteBeamState(StatefulByteLM):
         candidates = []
         extensions = []
 
-        if verbose:
-            print()
-
         for state in self.states:
-            # Filter for curr_byte.
             if new_state := state << q:
                 candidates.append(new_state)
-                if verbose:
-                    print(colors.bold % "Filtered:", repr(new_state))
-            # Maybe extend.
             if self.maybe_extend(state, q):
                 extensions.append(state.extend())
+
+        if verbose:
+            print()
+            for state in candidates:
+                print(colors.bold % "Filtered:", repr(state))
 
         # Extend concurrently.
         for state in await asyncio.gather(*extensions):
             if new_state := state << q:
-                new_state.parent = state
                 candidates.append(new_state)
                 if verbose:
                     print(colors.bold % "Ext+Filt:", repr(new_state))
