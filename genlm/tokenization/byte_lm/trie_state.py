@@ -2,7 +2,7 @@ import torch
 import numpy as np
 from functools import cached_property
 from arsenal import colors
-from .lm import StatefulTokenizedLM
+from .lm_state import StatefulTokenizedLM
 from ..util import Chart
 
 
@@ -105,10 +105,10 @@ class TrieState:
         return self.children[self.node]
 
     def has_EOT(self):
-        return None in self.children[self.node]
+        return None in self.actions()
 
     def get_EOT(self):
-        return self.children[self.node].get(None)
+        return self.actions().get(None)
 
     @cached_property
     def logp_next(self):
@@ -139,8 +139,5 @@ class TrieState:
 
     async def cleanup(self):
         self.trie.cleanup()
-
-    def __del__(self):
-        self.cleanup()
 
     # TODO: add viz methods

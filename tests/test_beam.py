@@ -27,24 +27,26 @@ async def test_generate(llm):
     state = await ByteBeamState.initial(llm, BeamParams(K=5))
 
     try:
-        output = await state.greedy(
-            b"An apple a day keeps the ", steps=12, verbose=True
-        )
+        output = await state.greedy(b"An apple a day keeps the ", steps=12)
         print(repr(output))
         assert output == b"An apple a day keeps the doctor away."
-        output = await state.sample(
-            b"An apple a day keeps the ", steps=12, verbose=True
-        )
+        output = await state.sample(b"An apple a day keeps the ", steps=12)
         print(repr(output))
     finally:
         await state.cleanup()
 
 
-@pytest.mark.parametrize("extend_threshold", [None, 0.1, 10])
+@pytest.mark.parametrize("step_extend_threshold", [None, 10])
+@pytest.mark.parametrize("logp_extend_threshold", [None, 0.1])
 @pytest.mark.asyncio
-async def test_async_batching(llm, extend_threshold):
+async def test_async_batching(llm, step_extend_threshold, logp_extend_threshold):
     state = await ByteBeamState.initial(
-        llm, BeamParams(K=5, step_extend_threshold=extend_threshold)
+        llm,
+        BeamParams(
+            K=5,
+            step_extend_threshold=step_extend_threshold,
+            logp_extend_threshold=logp_extend_threshold,
+        ),
     )
 
     try:
@@ -73,11 +75,17 @@ async def test_async_batching(llm, extend_threshold):
         await state.cleanup()
 
 
-@pytest.mark.parametrize("extend_threshold", [None, 0.1, 10])
+@pytest.mark.parametrize("step_extend_threshold", [None, 10])
+@pytest.mark.parametrize("logp_extend_threshold", [None, 0.1])
 @pytest.mark.asyncio
-async def test_weights(llm, extend_threshold):
+async def test_weights(llm, step_extend_threshold, logp_extend_threshold):
     state = await ByteBeamState.initial(
-        llm, BeamParams(K=5, step_extend_threshold=extend_threshold)
+        llm,
+        BeamParams(
+            K=5,
+            step_extend_threshold=step_extend_threshold,
+            logp_extend_threshold=logp_extend_threshold,
+        ),
     )
 
     try:

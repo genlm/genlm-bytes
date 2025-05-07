@@ -36,6 +36,23 @@ def logmeanexp(xs):
     return logsumexp(xs) - np.log(len(xs))
 
 
+def logsubexp(a, b):
+    """Compute log(exp(a) - exp(b)) in a numerically stable way.
+
+    Args:
+        a: First term (must be >= b)
+        b: Second term
+
+    Returns:
+        log(exp(a) - exp(b))
+    """
+    if a < b:
+        raise ValueError("logsubexp requires a >= b")
+    if np.isinf(a) and a < 0:
+        return -np.inf
+    return a + np.log1p(-np.exp(b - a))
+
+
 def escape(x):
     if isinstance(x, int):  # assume its a byte
         x = bytes([x])
@@ -283,9 +300,9 @@ def load_async_trie(decode):
     return async_trie
 
 
-def unflatten(d):
+def flatten(d):
     if len(d) == 0:
         return []
     if len(d) == 1:
         return [d[0]]
-    return [*unflatten(d[0]), d[1]]
+    return [*flatten(d[0]), d[1]]

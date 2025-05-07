@@ -459,6 +459,7 @@ class AsyncTokenByteTrie:
     def start(self):
         """Start the background processing task if not already running."""
         if not self._task or self._task.done():
+            logger.debug("starting background loop")
             # Create a new queue so that it is bound to the current event loop
             self._queue = asyncio.Queue()
             self._task = asyncio.create_task(self._background_loop())
