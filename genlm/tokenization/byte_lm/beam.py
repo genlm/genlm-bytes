@@ -15,8 +15,7 @@ from .trie_state import TrieState
 @dataclass
 class BeamParams:
     K: int
-    step_extend_threshold: float | None = None
-    logp_extend_threshold: float | None = None
+    prune_threshold: float | None = None
     verbose: bool = False
 
 
@@ -61,45 +60,59 @@ class ByteBeamState(StatefulByteLM):
         for state in self.states:
             if new_state := state << q:
                 candidates.append(new_state)
-            if self.maybe_extend(state, q):
-                extensions.append(state.extend())
 
-        if self.params.verbose:
-            print()
-            for state in candidates:
-                print(colors.bold % "Filtered:", repr(state))
+        W = logsumexp([s.weight for s in candidates])
+        for state in self.states:
+            if self.maybe_extend(W, state, q):
+                extensions.append(state.extend())
 
         for state in await asyncio.gather(*extensions):
             if new_state := state << q:
                 candidates.append(new_state)
-                if self.params.verbose:
-                    print(colors.bold % "Ext+Filt:", repr(new_state))
 
-        return self.spawn(candidates, new_context=(self.context, q))
+        new_state = self.spawn(candidates, new_context=(self.context, q))
+
+        if self.params.verbose:
+            print(new_state)
+
+        return new_state
+
+    @cached_property
+    def Z(self):
+        return logsumexp([s.weight for s in self.states])
 
     def prune(self):
-        """Prune the beam to the top K states."""
-        return self.spawn(self.states[: self.params.K])
+        return self.spawn(
+            [
+                s
+                for s in self.states
+                if self.params.prune_threshold is None
+                or np.exp(s.weight - self.Z) > self.params.prune_threshold
+            ][: self.params.K]
+        )
 
-    def maybe_extend(self, state, q):
+    def maybe_extend(self, W, state, q=None):
         """Determine whether to extend the state with an End-of-Token (EOT)."""
 
         if not state.has_EOT():
             return False
 
-        if q not in state.children[state.root]:
+        if q is not None and q not in state.children[state.root]:
             return False
 
-        if self.params.step_extend_threshold is None:
+        if self.params.prune_threshold is None:
             return True
 
         children = state.children[state.node]
-        if q not in children:
+        if q is not None and q not in children:
             return True
 
+        # Maximum contribution that the extended state can have
+        # to the total weight.
+        max_extended_weight = state.weight + state.logp_next[None]
         return (
-            np.exp(state.mass[children[q]] - state.mass[children[None]])
-            < self.params.step_extend_threshold
+            np.exp(max_extended_weight - np.logaddexp(W, max_extended_weight))
+            > self.params.prune_threshold
         )
 
     @cached_property
@@ -126,13 +139,7 @@ class ByteBeamState(StatefulByteLM):
                 if k is not None:
                     Q[k] = np.logaddexp(Q[k], logp + logq[k])
 
-            if state.has_EOT() and (
-                self.params.logp_extend_threshold is None
-                or
-                # Don't extend if the extended state's contribution to the total weight is less than the threshold
-                np.exp(state.weight + logq[None] - W)
-                >= self.params.logp_extend_threshold
-            ):
+            if self.maybe_extend(W, state):
                 Z = np.logaddexp(Z, state.weight)
                 extensions.append(state.extend())
             else:
@@ -181,23 +188,21 @@ class ByteBeamState(StatefulByteLM):
         print(colors.bold % f"log W: {W}")
         print(colors.bold % f"log Z: {Z}")
         print(colors.bold % f"log Σ: {logsumexp(list(Q.values()))}")
-        print(
-            colors.blue
-            % f"pruned {np.exp(logsubexp(W, Z) - W) * 100:.2f}% of total weight"
-        )
 
     def __repr__(self):
         return (
-            colors.bold % "Current context: "
+            colors.bold % "\nCurrent context: "
             + colors.green % repr(self.flat_context)
+            + "\n"
+            + colors.bold % f"Z: {self.Z}"
             + "\n"
             + colors.bold % "Candidates:"
             + "\n"
             + (
                 "\n".join(
-                    f"\033[38;5;247m{repr(state)}\033[0m"
+                    f"\033[38;5;247m{repr(state)} ({np.exp(state.weight - self.Z):.4f})\033[0m"
                     if i >= self.params.K
-                    else repr(state)
+                    else f"{repr(state)} ({np.exp(state.weight - self.Z):.4f})"
                     for i, state in enumerate(self.states)
                 )
             )

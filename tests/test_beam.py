@@ -1,7 +1,5 @@
 import pytest
-import time
 import numpy as np
-import asyncio
 from genlm.backend import load_model_by_name
 from genlm.tokenization.byte_lm import ByteBeamState, BeamParams
 
@@ -23,8 +21,15 @@ async def test_basics(llm):
 
 
 @pytest.mark.asyncio
-async def test_generate(llm):
-    state = await ByteBeamState.initial(llm, BeamParams(K=5))
+@pytest.mark.parametrize("prune_threshold", [None, 0.1])
+async def test_generate(llm, prune_threshold):
+    state = await ByteBeamState.initial(
+        llm,
+        BeamParams(
+            K=5,
+            prune_threshold=prune_threshold,
+        ),
+    )
 
     try:
         output = await state.greedy(b"An apple a day keeps the ", steps=12)
@@ -36,55 +41,51 @@ async def test_generate(llm):
         await state.cleanup()
 
 
-@pytest.mark.parametrize("step_extend_threshold", [None, 10])
-@pytest.mark.parametrize("logp_extend_threshold", [None, 0.1])
+# @pytest.mark.parametrize("prune_threshold", [None, 0.1])
+# @pytest.mark.asyncio
+# async def test_async_batching(llm, prune_threshold):
+#     state = await ByteBeamState.initial(
+#         llm,
+#         BeamParams(
+#             K=5,
+#             prune_threshold=prune_threshold,
+#         ),
+#     )
+
+#     try:
+#         # warm up
+#         await state.greedy(b"I", steps=5)
+#         await state.greedy(b"Y", steps=5)
+
+#         start = time.time()
+#         concurrent_output = await asyncio.gather(
+#             state.greedy(b"I", steps=5),
+#             state.greedy(b"Y", steps=5),
+#         )
+#         concurrent_time = time.time() - start
+
+#         start = time.time()
+#         sequential_output_I = await state.greedy(b"I", steps=5)
+#         sequential_output_Y = await state.greedy(b"Y", steps=5)
+#         sequential_time = time.time() - start
+
+#         print(f"Concurrent requests time: {concurrent_time:.2f} seconds")
+#         print(f"Sequential requests time: {sequential_time:.2f} seconds")
+
+#         assert concurrent_output == [sequential_output_I, sequential_output_Y]
+#         assert concurrent_time < sequential_time
+#     finally:
+#         await state.cleanup()
+
+
+@pytest.mark.parametrize("prune_threshold", [None, 0.1])
 @pytest.mark.asyncio
-async def test_async_batching(llm, step_extend_threshold, logp_extend_threshold):
+async def test_weights(llm, prune_threshold):
     state = await ByteBeamState.initial(
         llm,
         BeamParams(
             K=5,
-            step_extend_threshold=step_extend_threshold,
-            logp_extend_threshold=logp_extend_threshold,
-        ),
-    )
-
-    try:
-        # warm up
-        await state.greedy(b"I", steps=5)
-        await state.greedy(b"Y", steps=5)
-
-        start = time.time()
-        concurrent_output = await asyncio.gather(
-            state.greedy(b"I", steps=5),
-            state.greedy(b"Y", steps=5),
-        )
-        concurrent_time = time.time() - start
-
-        start = time.time()
-        sequential_output_I = await state.greedy(b"I", steps=5)
-        sequential_output_Y = await state.greedy(b"Y", steps=5)
-        sequential_time = time.time() - start
-
-        print(f"Concurrent requests time: {concurrent_time:.2f} seconds")
-        print(f"Sequential requests time: {sequential_time:.2f} seconds")
-
-        assert concurrent_output == [sequential_output_I, sequential_output_Y]
-        assert concurrent_time < sequential_time
-    finally:
-        await state.cleanup()
-
-
-@pytest.mark.parametrize("step_extend_threshold", [None, 10])
-@pytest.mark.parametrize("logp_extend_threshold", [None, 0.1])
-@pytest.mark.asyncio
-async def test_weights(llm, step_extend_threshold, logp_extend_threshold):
-    state = await ByteBeamState.initial(
-        llm,
-        BeamParams(
-            K=5,
-            step_extend_threshold=step_extend_threshold,
-            logp_extend_threshold=logp_extend_threshold,
+            prune_threshold=prune_threshold,
         ),
     )
 

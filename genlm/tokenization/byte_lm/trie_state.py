@@ -110,6 +110,9 @@ class TrieState:
     def get_EOT(self):
         return self.actions().get(None)
 
+    def rel_weight(self, W):
+        return np.exp(self.weight + self.logp_next[None] - W)
+
     @cached_property
     def logp_next(self):
         logZ = self.mass[self.node]
