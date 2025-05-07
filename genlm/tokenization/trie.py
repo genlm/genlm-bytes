@@ -20,13 +20,13 @@ class TokenByteTrie:
             atomic_tokens (list[bytes], optional): List of tokens that should be treated as atomic units rather than being split into bytes.
         """
         self.decode = decode
-        
+
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         if self.device not in ["cpu", "cuda"]:
             raise ValueError(f"Invalid device: {device}. Must be 'cpu', 'cuda' or None")
-        
+
         self._build_trie(atomic_tokens or [])
-        self._renumber()        
+        self._renumber()
         self._build_node2prefix()
         self._build_reachability_matrix()
         self.token_ids = torch.tensor(
@@ -48,12 +48,12 @@ class TokenByteTrie:
         self.root = 0
         self.token_id_to_leaf = []
         self.lookup = {}
-        
+
         for token_id, word in enumerate(self.decode):
             if word in self.lookup:
                 raise ValueError(f"Duplicate word in vocabulary: {word}")
             self.lookup[word] = token_id
-            
+
             curr = self.root
             letters = [word] if word in atomic_tokens else word
             for letter in letters:
@@ -69,7 +69,9 @@ class TokenByteTrie:
             self.token_id_to_leaf.append((token_id, last))
 
         self.leaf2word = dict(zip(self.word2leaf.values(), self.word2leaf.keys()))
-        self.jump = [np.array(sorted(x.values()), dtype=np.int32) for x in self.children]
+        self.jump = [
+            np.array(sorted(x.values()), dtype=np.int32) for x in self.children
+        ]
 
     def _renumber(self):
         """Renumber the states of the trie so that they are named by a contiguous
@@ -152,7 +154,7 @@ class TokenByteTrie:
                     node2prefix[y] = node2prefix[x] + list(letter)
                 else:
                     node2prefix[y] = node2prefix[x] + [letter]
-        
+
         self.node2prefix = node2prefix
 
     def _build_parent_map(self):
@@ -384,12 +386,11 @@ class TokenByteTrie:
         return dot
 
 
-
 class TrieOp(Enum):
     """Enumeration of supported trie operations."""
+
     SUM = "sum"
     MAX = "max"
-
 
 
 class AsyncTokenByteTrie:
@@ -458,7 +459,7 @@ class AsyncTokenByteTrie:
     def start(self):
         """Start the background processing task if not already running."""
         if not self._task or self._task.done():
-            # Create a new queue so that it is bound to the current event loop 
+            # Create a new queue so that it is bound to the current event loop
             self._queue = asyncio.Queue()
             self._task = asyncio.create_task(self._background_loop())
 

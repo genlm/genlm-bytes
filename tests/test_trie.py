@@ -24,8 +24,7 @@ def mock_llm():
 def tokens_and_weights(draw, n_weights):
     vocab = draw(
         st.lists(
-            st.binary(min_size=1, max_size=5), 
-            min_size=1, max_size=10, unique=True
+            st.binary(min_size=1, max_size=5), min_size=1, max_size=10, unique=True
         )
     )
 
@@ -42,13 +41,15 @@ def tokens_and_weights(draw, n_weights):
         weights.append(
             draw(
                 st.lists(
-                    st.floats(min_value=0.0, max_value=10.0), 
-                    min_size=len(vocab), max_size=len(vocab)
+                    st.floats(min_value=0.0, max_value=10.0),
+                    min_size=len(vocab),
+                    max_size=len(vocab),
                 )
             )
         )
 
     return vocab, weights
+
 
 def make_wants(trie, weights, op, f):
     assert len(weights) == len(trie.decode)
@@ -60,7 +61,7 @@ def make_wants(trie, weights, op, f):
 
     internal_wants = {}
     for token, weight in zip(trie.decode, weights):
-        for i in range(len(token)+1):
+        for i in range(len(token) + 1):
             prefix = token[:i]
             if prefix not in internal_wants:
                 internal_wants[f(prefix)] = weight
@@ -68,7 +69,7 @@ def make_wants(trie, weights, op, f):
                 internal_wants[f(prefix)] = op(internal_wants[f(prefix)], weight)
 
     return leaf_wants, internal_wants
-        
+
 
 def assert_weights_close(trie, leaf_wants, internal_wants, haves, f):
     assert len(haves) == len(trie.children)
@@ -147,7 +148,7 @@ def test_weight_sum(tokens_and_weights):
     haves = trie.weight_sum(weights[0])
     leaf_wants, internal_wants = make_wants(trie, weights[0], np.add, bytes)
     assert_weights_close(trie, leaf_wants, internal_wants, haves, bytes)
-    
+
 
 @given(tokens_and_weights(n_weights=1))
 def test_weight_max(tokens_and_weights):
@@ -166,7 +167,7 @@ def test_batch_weight_sum(tokens_and_weights):
     for i in range(len(weights)):
         leaf_wants, internal_wants = make_wants(trie, weights[i], np.add, bytes)
         assert_weights_close(trie, leaf_wants, internal_wants, haves[i], bytes)
-    
+
 
 @given(tokens_and_weights(n_weights=3))
 def test_batch_weight_max(tokens_and_weights):
@@ -214,7 +215,9 @@ async def test_async_error_handling(decode):
     async_trie = AsyncTokenByteTrie.from_vocab(decode)
     async_trie.start()
     with pytest.raises(ValueError):
-        future = await async_trie._queue_request(torch.tensor([0.1, 0.2, 0.2, 0.5]), "invalid-op")
+        future = await async_trie._queue_request(
+            torch.tensor([0.1, 0.2, 0.2, 0.5]), "invalid-op"
+        )
         await future
 
 

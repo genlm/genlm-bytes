@@ -4,7 +4,6 @@ from arsenal import colors
 from dataclasses import dataclass
 from functools import cached_property
 
-from genlm.backend import load_model_by_name
 from genlm.backend.tokenization.bytes import get_byte_vocab
 
 from genlm.tokenization.trie import AsyncTokenByteTrie
@@ -81,7 +80,7 @@ class ByteBeamState(StatefulByteLM):
 
     def prune(self):
         """Prune the beam to the top K states."""
-        return self.spawn(self.states[:self.params.K])
+        return self.spawn(self.states[: self.params.K])
 
     def maybe_extend(self, state, q):
         """Determine whether to extend the state with an End-of-Token (EOT)."""
@@ -120,7 +119,7 @@ class ByteBeamState(StatefulByteLM):
 
         Returns:
             (Chart): The log probability distribution of the next byte.
-        """ 
+        """
         extensions = []
         Q = Chart(-np.inf)
         Z = logsumexp([s.weight for s in self.states])
@@ -131,10 +130,12 @@ class ByteBeamState(StatefulByteLM):
                 if k is not None:
                     Q[k] = np.logaddexp(Q[k], logp + logq[k])
 
-            if state.has_EOT(): 
-                if self.params.logp_extend_threshold is None or np.exp(
-                    state.weight + logq[None] - Z
-                ) > self.params.logp_extend_threshold:
+            if state.has_EOT():
+                if (
+                    self.params.logp_extend_threshold is None
+                    or np.exp(state.weight + logq[None] - Z)
+                    > self.params.logp_extend_threshold
+                ):
                     extensions.append(state.extend())
 
         # Handle Nones that were filtered above.
