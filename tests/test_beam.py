@@ -3,17 +3,17 @@ import time
 import numpy as np
 import asyncio
 from genlm.backend import load_model_by_name
-from genlm.tokenization.byte_lm import ByteBeamState
+from genlm.tokenization.byte_lm import ByteBeamState, BeamParams
 
 
 @pytest.fixture(scope="module")
 def llm():
-    return load_model_by_name("gpt2-medium")
+    return load_model_by_name("gpt2-medium", backend="hf")
 
 
 @pytest.mark.asyncio
 async def test_basics(llm):
-    state = await ByteBeamState.initial(llm, K=5)
+    state = await ByteBeamState.initial(llm, BeamParams(K=5))
 
     try:
         result = await state.greedy(b"An apple a day keeps ", steps=20)
@@ -24,7 +24,7 @@ async def test_basics(llm):
 
 @pytest.mark.asyncio
 async def test_generate(llm):
-    state = await ByteBeamState.initial(llm, K=5)
+    state = await ByteBeamState.initial(llm, BeamParams(K=5))
 
     try:
         output = await state.greedy(
@@ -43,7 +43,7 @@ async def test_generate(llm):
 @pytest.mark.parametrize("extend_threshold", [None, 0.1, 10])
 @pytest.mark.asyncio
 async def test_async_batching(llm, extend_threshold):
-    state = await ByteBeamState.initial(llm, K=5, extend_threshold=extend_threshold)
+    state = await ByteBeamState.initial(llm, BeamParams(K=5, step_extend_threshold=extend_threshold))
 
     try:
         # warm up
@@ -74,7 +74,7 @@ async def test_async_batching(llm, extend_threshold):
 @pytest.mark.parametrize("extend_threshold", [None, 0.1, 10])
 @pytest.mark.asyncio
 async def test_weights(llm, extend_threshold):
-    state = await ByteBeamState.initial(llm, K=5, extend_threshold=extend_threshold)
+    state = await ByteBeamState.initial(llm, BeamParams(K=5, step_extend_threshold=extend_threshold))
 
     try:
         qs = b"An apple a day keeps the"

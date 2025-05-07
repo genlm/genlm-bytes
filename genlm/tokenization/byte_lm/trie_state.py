@@ -21,7 +21,7 @@ class TrieState:
     @classmethod
     async def initial(cls, lm, trie):
         lm_state = StatefulTokenizedLM.initial(lm)
-        mass = np.log(await trie.weight_sum(torch.exp(await lm_state.logp_next)))
+        mass = torch.log(await trie.weight_sum(torch.exp(await lm_state.logp_next))).cpu().numpy()
         return cls(
             trie=trie,
             node=trie.trie.root,
@@ -77,10 +77,10 @@ class TrieState:
             return
 
         next_tok = self.trie.trie.leaf2word[eot_node]
-        lm_state = self.lm_state << self.trie.lookup[next_tok]
-        new_mass = np.log(
+        lm_state = self.lm_state << self.trie.trie.lookup[next_tok]
+        new_mass = torch.log(
             await self.trie.weight_sum(torch.exp(await lm_state.logp_next))
-        )
+        ).cpu().numpy()
 
         # We sometimes call extend in logp_next and then again in extend. This
         # helps us avoid recomputing the same state twice.
@@ -133,5 +133,8 @@ class TrieState:
 
     async def cleanup(self):
         self.trie.cleanup()
+
+    def __del__(self):
+        self.cleanup()
 
     # TODO: add viz methods

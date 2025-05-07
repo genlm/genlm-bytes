@@ -1,30 +1,38 @@
 import asyncio
 import numpy as np
 from arsenal import colors
+from dataclasses import dataclass
 from functools import cached_property
 
 from genlm.backend import load_model_by_name
 from genlm.backend.tokenization.bytes import get_byte_vocab
 
-from genlm.tokenization.byte_lm.trie_state import TrieState
-from genlm.tokenization.util import Chart, load_async_trie, logsumexp, unflatten
+from genlm.tokenization.trie import AsyncTokenByteTrie
+from genlm.tokenization.util import Chart, logsumexp, unflatten
 
 from .lm import StatefulByteLM
+from .trie_state import TrieState
+
+
+@dataclass
+class BeamParams:
+    K: int
+    step_extend_threshold: float | None = None
+    logp_extend_threshold: float | None = None
 
 
 class ByteBeamState(StatefulByteLM):
-    def __init__(self, states, K, V, extend_threshold=None, context=()):
+    def __init__(self, states, V, params, context=()):
         if not states:
             raise ValueError("Beam state must contain at least one state.")
 
         self.states = sorted(states, key=lambda b: -b.weight)
-        self.K = K
-        self.extend_threshold = extend_threshold
+        self.params = params
 
         super().__init__(V, context)
 
     @classmethod
-    async def initial(cls, llm, K, extend_threshold=None):
+    async def initial(cls, llm, params):
         """
         Initialize a beam state.
 
@@ -34,37 +42,14 @@ class ByteBeamState(StatefulByteLM):
             extend_threshold (float, optional): The threshold for extending a candidate.
         """
         decode = get_byte_vocab(llm.tokenizer)
-        async_trie = load_async_trie(decode)
+        async_trie = AsyncTokenByteTrie.from_vocab(decode)
         states = [await TrieState.initial(llm, async_trie)]
         V = set(b"".join(decode))
-        return cls(states, K, V, extend_threshold)
+        return cls(states, V, params)
 
-    @classmethod
-    async def initial_from_name(cls, name, K, extend_threshold=None, **kwargs):
-        """
-        Initialize a beam state from a token-level language model name.
-
-        Args:
-            name (str): The name of the model to load.
-            K (int): The (maximum) size of the beam.
-            extend_threshold (float, optional): The threshold for extending a candidate.
-            **kwargs: Additional arguments to pass to `load_model_by_name`.
-        """
-        llm = load_model_by_name(name, **kwargs)
-        return await cls.initial(llm, K, extend_threshold)
-
-    async def step(self, q: int, verbose=False):
+    async def step(self, q, verbose=False):
         """
         Extend the beam state by one byte.
-
-        Example:
-            >>> state = await ByteBeamState.initial(llm, K=5)
-            >>> state = await state.step(97) # "a"
-            >>> state = await state.step(98) # "b"
-            >>> state.context # The bytes we have consumed so far.
-            ((97,), 98)
-            >>> await state.logp_next # The log probability distribution of the next byte.
-            Chart(...)
 
         Args:
             q (int): The next byte to extend the beam by.
@@ -86,7 +71,6 @@ class ByteBeamState(StatefulByteLM):
             for state in candidates:
                 print(colors.bold % "Filtered:", repr(state))
 
-        # Extend concurrently.
         for state in await asyncio.gather(*extensions):
             if new_state := state << q:
                 candidates.append(new_state)
@@ -97,7 +81,7 @@ class ByteBeamState(StatefulByteLM):
 
     def prune(self):
         """Prune the beam to the top K states."""
-        return self.spawn(sorted(self.states, key=lambda b: -b.weight)[: self.K])
+        return self.spawn(self.states[:self.params.K])
 
     def maybe_extend(self, state, q):
         """Determine whether to extend the state with an End-of-Token (EOT)."""
@@ -108,7 +92,7 @@ class ByteBeamState(StatefulByteLM):
         if q not in state.children[state.root]:
             return False
 
-        if self.extend_threshold is None:
+        if self.params.step_extend_threshold is None:
             return True
 
         children = state.children[state.node]
@@ -117,16 +101,15 @@ class ByteBeamState(StatefulByteLM):
 
         return (
             np.exp(state.mass[children[q]] - state.mass[children[None]])
-            < self.extend_threshold
+            < self.params.step_extend_threshold
         )
 
     def spawn(self, states, new_context=None):
         """Spawn a new beam state from the current one."""
         return ByteBeamState(
             states=states,
-            K=self.K,
             V=self.V,
-            extend_threshold=self.extend_threshold,
+            params=self.params,
             context=new_context or self.context,
         )
 
@@ -137,9 +120,10 @@ class ByteBeamState(StatefulByteLM):
 
         Returns:
             (Chart): The log probability distribution of the next byte.
-        """
-        Q = Chart(-np.inf)
+        """ 
         extensions = []
+        Q = Chart(-np.inf)
+        Z = logsumexp([s.weight for s in self.states])
         for state in self.states:
             logq = state.logp_next
             logp = state.weight
@@ -147,8 +131,11 @@ class ByteBeamState(StatefulByteLM):
                 if k is not None:
                     Q[k] = np.logaddexp(Q[k], logp + logq[k])
 
-            if state.has_EOT():
-                extensions.append(state.extend())
+            if state.has_EOT(): 
+                if self.params.logp_extend_threshold is None or np.exp(
+                    state.weight + logq[None] - Z
+                ) > self.params.logp_extend_threshold:
+                    extensions.append(state.extend())
 
         # Handle Nones that were filtered above.
         extended = await asyncio.gather(*extensions)
@@ -159,11 +146,11 @@ class ByteBeamState(StatefulByteLM):
                 assert k is not None
                 Q[k] = np.logaddexp(Q[k], logp + logq[k])
 
-        Z = logsumexp(
-            [s.weight for s in self.states]
-        )  # Z = logsumexp(list(Q.values())) # This is equivalent.
         for k in Q:
             Q[k] = Q[k] - Z
+
+        _Z = logsumexp(list(Q.values()))
+        assert np.isclose(_Z, 0, atol=1e-5), _Z
 
         return Q
 
