@@ -420,12 +420,12 @@ class AsyncTokenByteTrie:
         trie = TokenByteTrie(decode=vocab, **kwargs)
         return cls(trie)
 
-    async def _queue_request(self, request, op):
+    def _queue_request(self, request, op):
         if not self._task or self._task.done():
             self.start()
 
         future = asyncio.Future()
-        await self._queue.put((request, future, op))
+        self._queue.put_nowait((request, future, op))
         return future
 
     async def weight_sum(self, ws):
@@ -438,9 +438,7 @@ class AsyncTokenByteTrie:
         Returns:
             (np.ndarray): The calculated mass sums for the given distribution.
         """
-        future = await self._queue_request(ws, TrieOp.SUM)
-        result = await future
-        return result
+        return await self._queue_request(ws, TrieOp.SUM)
 
     async def weight_max(self, ws):
         """Queue a `weight_max` request. Multiple concurrent calls will be automatically batched
@@ -452,9 +450,7 @@ class AsyncTokenByteTrie:
         Returns:
             (np.ndarray): The calculated max weights for the given distribution.
         """
-        future = await self._queue_request(ws, TrieOp.MAX)
-        result = await future
-        return result
+        return await self._queue_request(ws, TrieOp.MAX)
 
     def start(self):
         """Start the background processing task if not already running."""
@@ -463,12 +459,6 @@ class AsyncTokenByteTrie:
             # Create a new queue so that it is bound to the current event loop
             self._queue = asyncio.Queue()
             self._task = asyncio.create_task(self._background_loop())
-
-    def _do_weight_sums(self, batch_weights):
-        return self.trie.batch_weight_sum(batch_weights)
-
-    def _do_weight_maxs(self, batch_weights):
-        return self.trie.batch_weight_max(batch_weights)
 
     async def _background_loop(self):
         """Background task that processes queued weight sum and max requests.
@@ -496,10 +486,10 @@ class AsyncTokenByteTrie:
 
                     if op == TrieOp.SUM:
                         logger.debug(f"processing {len(requests)} sum requests")
-                        results = self._do_weight_sums(requests)
+                        results = self.trie.batch_weight_sum(requests)
                     elif op == TrieOp.MAX:
                         logger.debug(f"processing {len(requests)} max requests")
-                        results = self._do_weight_maxs(requests)
+                        results = self.trie.batch_weight_max(requests)
                     else:
                         raise ValueError(f"Unknown trie operation: {op}")
 
