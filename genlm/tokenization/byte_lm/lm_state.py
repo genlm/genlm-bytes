@@ -1,8 +1,8 @@
-import numpy as np
+from numpy import exp
 from arsenal import colors
 from abc import ABC, abstractmethod
 from arsenal.maths import sample_dict
-from genlm.tokenization.util import unflatten
+from genlm.tokenization.util import flatten
 from genlm.backend import load_model_by_name
 
 
@@ -42,22 +42,21 @@ class StatefulTokenizedLM:
 
 
 class StatefulByteLM(ABC):
-    def __init__(self, V: set, context: tuple = ()):
-        self.V = V
+    def __init__(self, context: tuple = ()):
         self.context = context
 
     @abstractmethod
-    async def step(self, q: int, verbose=False):
+    async def step(self, q: int):
         pass
 
     def prune(self):
         return self
 
-    async def consume(self, qs, verbose=False):
+    async def consume(self, qs):
         state = self
         for q in qs:
-            state = await state.step(q, verbose)
             state = state.prune()
+            state = await state.step(q)
         return state
 
     @property
@@ -65,23 +64,23 @@ class StatefulByteLM(ABC):
     async def logp_next(self):
         pass
 
-    async def greedy(self, prompt, steps, verbose=False):
-        state = await self.consume(list(prompt), verbose)
+    async def greedy(self, prompt, steps):
+        state = await self.consume(list(prompt))
         for _ in range(steps):
             logp = await state.logp_next
             x = logp.argmax()
-            state = await state.step(x, verbose)
             state = state.prune()
-        return bytes(unflatten(state.context))
+            state = await state.step(x)
+        return bytes(flatten(state.context))
 
-    async def sample(self, prompt, steps, verbose=False, draw=sample_dict):
-        state = await self.consume(list(prompt), verbose)
+    async def sample(self, prompt, steps, draw=sample_dict):
+        state = await self.consume(list(prompt))
         for _ in range(steps):
             logp = await state.logp_next
-            x = draw(logp.map_values(np.exp))
-            state = await state.step(x, verbose)
+            x = draw(logp.map_values(exp))
             state = state.prune()
-        return bytes(unflatten(state.context))
+            state = await state.step(x)
+        return bytes(flatten(state.context))
 
     async def cleanup(self):
         pass
