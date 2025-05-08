@@ -53,16 +53,6 @@ def logsubexp(a, b):
     return a + np.log1p(-np.exp(b - a))
 
 
-def escape(x):
-    if isinstance(x, int):  # assume its a byte
-        x = bytes([x])
-    if isinstance(x, bytes):
-        y = repr(x)[2:-1]
-    else:
-        y = repr(x)[1:-1]
-    return y.replace(" ", "␣")
-
-
 class Chart(dict):
     def __init__(self, zero, vals=()):
         self.zero = zero

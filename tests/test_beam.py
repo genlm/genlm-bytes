@@ -16,12 +16,14 @@ async def test_basics(llm):
     try:
         result = await state.greedy(b"An apple a day keeps ", steps=20)
         print(result)
+        result = await state.sample(b"An apple a day keeps ", steps=20)
+        print(result)
     finally:
         await state.cleanup()
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("prune_threshold", [None, 0.1])
+@pytest.mark.parametrize("prune_threshold", [0, 0.1])
 async def test_generate(llm, prune_threshold):
     state = await ByteBeamState.initial(
         llm,
@@ -78,7 +80,7 @@ async def test_generate(llm, prune_threshold):
 #         await state.cleanup()
 
 
-@pytest.mark.parametrize("prune_threshold", [None, 0.1])
+@pytest.mark.parametrize("prune_threshold", [0, 0.1])
 @pytest.mark.asyncio
 async def test_weights(llm, prune_threshold):
     state = await ByteBeamState.initial(
@@ -92,7 +94,7 @@ async def test_weights(llm, prune_threshold):
     try:
         qs = b"An apple a day keeps the"
         for q in qs:
-            state = await state.step(q)
+            state = await (state << q)
             for candidate in state.states:
                 context = candidate.lm_state.context
                 llm = candidate.lm_state.model

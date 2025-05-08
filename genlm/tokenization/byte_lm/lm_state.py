@@ -2,15 +2,13 @@ from numpy import exp
 from arsenal import colors
 from abc import ABC, abstractmethod
 from arsenal.maths import sample_dict
-from genlm.tokenization.util import flatten
-from genlm.backend import load_model_by_name
 
 
 class StatefulTokenizedLM:
-    def __init__(self, model, context):
+    def __init__(self, model, context, n_calls=0):
         self.model = model
         self.context = context
-        self._n_calls = 0
+        self._n_calls = n_calls
 
     @classmethod
     def initial(cls, model, initial_context=None):
@@ -18,14 +16,11 @@ class StatefulTokenizedLM:
             initial_context = [model.tokenizer.bos_token_id]
         return cls(model, initial_context)
 
-    @classmethod
-    def initial_from_name(cls, name, initial_context=None, **kwargs):
-        model = load_model_by_name(name, **kwargs)
-        return cls.initial(model, initial_context)
-
     def __lshift__(self, token):
         assert isinstance(token, int)
-        return StatefulTokenizedLM(self.model, self.context + [token])
+        return StatefulTokenizedLM(
+            self.model, self.context + [token], n_calls=self._n_calls
+        )
 
     @property
     async def logp_next(self):
@@ -37,50 +32,45 @@ class StatefulTokenizedLM:
             "|".join([repr(self.model.byte_vocab[x]) for x in self.context])
         )
 
-    def clone(self):
-        return StatefulTokenizedLM(self.model, self.context.copy())
-
 
 class StatefulByteLM(ABC):
-    def __init__(self, context: tuple = ()):
-        self.context = context
-
     @abstractmethod
-    async def step(self, q: int):
+    async def __lshift__(self, b: int):
         pass
 
     def prune(self):
         return self
 
-    async def consume(self, qs):
-        state = self
-        for q in qs:
-            state = state.prune()
-            state = await state.step(q)
-        return state
-
-    @property
     @abstractmethod
     async def logp_next(self):
         pass
 
-    async def greedy(self, prompt, steps):
-        state = await self.consume(list(prompt))
-        for _ in range(steps):
-            logp = await state.logp_next
-            x = logp.argmax()
-            state = state.prune()
-            state = await state.step(x)
-        return bytes(flatten(state.context))
+    async def prefill(self, bs):
+        "Prefill the beam with bytes"
+        state = self
+        for b in bs:
+            state = await (state.prune() << b)
+        return state
 
-    async def sample(self, prompt, steps, draw=sample_dict):
-        state = await self.consume(list(prompt))
+    async def greedy(self, context, steps):
+        context = list(context)
+        state = await self.prefill(context)
         for _ in range(steps):
-            logp = await state.logp_next
-            x = draw(logp.map_values(exp))
-            state = state.prune()
-            state = await state.step(x)
-        return bytes(flatten(state.context))
+            Q = await state.logp_next()
+            b = Q.argmax()
+            state = await (state.prune() << b)
+            context.append(b)
+        return bytes(context)
+
+    async def sample(self, context, steps, draw=sample_dict):
+        context = list(context)
+        state = await self.prefill(context)
+        for _ in range(steps):
+            Q = await state.logp_next()
+            b = draw(Q.map_values(exp))
+            state = await (state.prune() << b)
+            context.append(b)
+        return bytes(context)
 
     async def cleanup(self):
         pass

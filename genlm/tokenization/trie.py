@@ -135,6 +135,9 @@ class TokenByteTrie:
         self.token_id_to_leaf = np.array(
             [(i, f(x)) for i, x in self.token_id_to_leaf], dtype=np.int32
         )
+        self.leaf2token_id = dict(
+            zip(self.token_id_to_leaf[:, 1], self.token_id_to_leaf[:, 0])
+        )
 
         self.ordering = np.array([f(x) for x in self.ordering])
         self.jump = [np.array(sorted(x.values()), dtype=np.int32) for x in new_children]
