@@ -268,26 +268,14 @@ class LRUCache:
         return list(self.cache.keys())
 
 
-def bern(p):
-    return {True: p, False: 1 - p}
-
-
-def load_async_trie(decode):
-    from genlm.backend import AsyncTokenCharacterTrie
-
-    async_trie = AsyncTokenCharacterTrie.from_vocab(decode)
-
-    lookup = {}
-    for i, v in enumerate(decode):
-        if v in lookup:
-            raise ValueError(
-                f"Token {v!r} maps to multiple token_ids ({lookup[v]}, {i})."
-            )
-        lookup[v] = i
-
-    async_trie.lookup = lookup
-
-    return async_trie
+def escape(x):
+    if isinstance(x, int):  # assume its a byte
+        x = bytes([x])
+    if isinstance(x, bytes):
+        y = repr(x)[2:-1]
+    else:
+        y = repr(x)[1:-1]
+    return y.replace(" ", "␣")
 
 
 def flatten(d):
@@ -296,3 +284,7 @@ def flatten(d):
     if len(d) == 1:
         return [d[0]]
     return [*flatten(d[0]), d[1]]
+
+
+def flatten_escape(d):
+    return [escape(x) for x in flatten(d)]

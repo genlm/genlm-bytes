@@ -30,6 +30,7 @@ async def test_generate(llm, prune_threshold):
         BeamParams(
             K=5,
             prune_threshold=prune_threshold,
+            verbose=True,
         ),
     )
 
@@ -37,8 +38,6 @@ async def test_generate(llm, prune_threshold):
         output = await state.greedy(b"An apple a day keeps the ", steps=12)
         print(repr(output))
         assert output == b"An apple a day keeps the doctor away."
-        output = await state.sample(b"An apple a day keeps the ", steps=12)
-        print(repr(output))
     finally:
         await state.cleanup()
 

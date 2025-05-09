@@ -3,7 +3,7 @@ import numpy as np
 from functools import cached_property
 from arsenal import colors
 from .lm_state import StatefulTokenizedLM
-from ..util import Chart
+from ..util import Chart, escape
 
 
 class LazyTrieState:
@@ -89,7 +89,7 @@ class LazyTrieState:
         )
 
     def __repr__(self):
-        context = colors.green % ("|" + repr(bytes(self.partial)))
+        context = colors.green % ("|" + escape(bytes(self.partial)))
         return f"{self.weight:.2f}: {self.lm_state}" + context
 
     async def cleanup(self):

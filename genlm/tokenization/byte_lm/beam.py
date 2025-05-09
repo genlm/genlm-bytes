@@ -17,6 +17,15 @@ class BeamParams:
     prune_threshold: float = 0.0
     verbose: bool = False
 
+    def __post_init__(self):
+        if self.prune_threshold < 0:
+            raise ValueError(
+                f"prune_threshold must be non-negative, got {self.prune_threshold}"
+            )
+        self.log_prune_threshold = (
+            np.log(self.prune_threshold) if self.prune_threshold > 0 else -np.inf
+        )
+
 
 class ByteBeamState(StatefulByteLM):
     def __init__(self, states, params):
@@ -86,7 +95,7 @@ class ByteBeamState(StatefulByteLM):
 
         coros = []
         for state in extends:
-            if np.exp(state.weight - logZ) > self.params.prune_threshold:
+            if state.weight - logZ > self.params.log_prune_threshold:
                 coros.append(state.materialize())
 
         return await asyncio.gather(*coros)
@@ -95,7 +104,7 @@ class ByteBeamState(StatefulByteLM):
         new_states = [
             state
             for state in self
-            if np.exp(state.weight - self.logZ) > self.params.prune_threshold
+            if state.weight - self.logZ > self.params.log_prune_threshold
         ][: self.params.K]
         return ByteBeamState(new_states, self.params)
 

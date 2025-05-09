@@ -3,6 +3,8 @@ from arsenal import colors
 from abc import ABC, abstractmethod
 from arsenal.maths import sample_dict
 
+from ..util import escape
+
 
 class StatefulTokenizedLM:
     def __init__(self, model, context, n_calls=0):
@@ -29,7 +31,7 @@ class StatefulTokenizedLM:
 
     def __repr__(self):
         return colors.purple % (
-            "|".join([repr(self.model.byte_vocab[x]) for x in self.context])
+            "|".join([escape(self.model.byte_vocab[x]) for x in self.context])
         )
 
 
