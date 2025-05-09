@@ -1,7 +1,7 @@
 # Developer's Guide
 
 This guide describes how to complete various tasks you'll encounter when working
-on the `genlm-tokenization` codebase.
+on the `genlm-bytes` codebase.
 
 ## Commit Hooks
 

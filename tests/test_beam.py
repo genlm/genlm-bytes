@@ -1,7 +1,7 @@
 import pytest
 import numpy as np
 from genlm.backend import load_model_by_name
-from genlm.tokenization.byte_lm import ByteBeamState, BeamParams
+from genlm.bytes import ByteBeamState, BeamParams
 
 
 @pytest.fixture(scope="module")

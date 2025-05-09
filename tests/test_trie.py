@@ -5,7 +5,7 @@ import numpy as np
 from transformers import AutoTokenizer
 
 from genlm.backend.llm import MockAsyncLM
-from genlm.tokenization.trie import TokenByteTrie, AsyncTokenByteTrie
+from genlm.bytes import TokenByteTrie, AsyncTokenByteTrie
 
 from hypothesis import given, strategies as st
 

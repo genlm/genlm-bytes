@@ -5,9 +5,9 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools_scm]
 
 [project]
-name = "genlm-tokenization"
+name = "genlm-bytes"
 dynamic = ["version"]
-description = "Tokenization utilities for GenLM"
+description = "Algorithms for byte-level language modeling"
 readme = "README.md"
 requires-python = ">=3.11"
 authors = []
@@ -38,4 +38,4 @@ bench = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["genlm", "genlm/tokenization"]
+include = ["genlm", "genlm/bytes"]
