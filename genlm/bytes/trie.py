@@ -11,13 +11,14 @@ logger = logging.getLogger(__name__)
 class TokenByteTrie:
     """A trie data structure for efficient token-to-byte mapping."""
 
-    def __init__(self, decode, device=None, atomic_tokens=None):
+    def __init__(self, decode, device=None, atomic_tokens=None, eot_token=None):
         """Initialize a `TokenByteTrie`.
 
         Args:
             decode (list[bytes]): List representing the token vocabulary.
             device (str, optional): Device to use for weight sum and max computations ('cpu' or 'cuda').
             atomic_tokens (list[bytes], optional): List of tokens that should be treated as atomic units rather than being split into bytes.
+            eot_token (bytes|None, optional): End-of-token token. Default is None, which represents EOT as None.
         """
         self.decode = decode
 
@@ -25,6 +26,7 @@ class TokenByteTrie:
         if self.device not in ["cpu", "cuda"]:
             raise ValueError(f"Invalid device: {device}. Must be 'cpu', 'cuda' or None")
 
+        self.eot_token = eot_token
         self._build_trie(atomic_tokens or [])
         self._renumber()
         self._build_node2prefix()
@@ -62,7 +64,7 @@ class TokenByteTrie:
                     self.children.append({})
                 curr = self.children[curr][letter]
 
-            self.children[curr][None] = last = len(self.children)
+            self.children[curr][self.eot_token] = last = len(self.children)
             self.children.append({})
             assert word not in self.word2leaf
             self.word2leaf[word] = last
@@ -204,14 +206,6 @@ class TokenByteTrie:
         self.M = torch.sparse_coo_tensor(
             indices, values, (len(leaf_indices), len(self.children))
         ).to_sparse_csr()
-
-    def _alloc_weights(self):
-        """Allocate an array to store weight values for all nodes.
-
-        Returns:
-            (np.ndarray): Zero-initialized array for storing weight values
-        """
-        return np.zeros(len(self.children), dtype=np.float64)
 
     def _preprocess_ws(self, batch_ws):
         """Preprocess weight sums for batch processing.
@@ -427,7 +421,7 @@ class AsyncTokenByteTrie:
         if not self._task or self._task.done():
             self.start()
 
-        future = asyncio.Future()
+        future = asyncio.get_running_loop().create_future()
         self._queue.put_nowait((request, future, op))
         return future
 
@@ -480,18 +474,23 @@ class AsyncTokenByteTrie:
                 request, future, op = await self._queue.get()
                 op_groups[op].append((request, future))
 
-                while not self._queue.empty():
-                    request, future, op = await self._queue.get()
-                    op_groups[op].append((request, future))
+                try:
+                    while True:
+                        request, future, op = self._queue.get_nowait()
+                        op_groups[op].append((request, future))
+                except asyncio.QueueEmpty:
+                    pass
 
                 for op, group in op_groups.items():
                     requests, futures = zip(*group)
 
                     if op == TrieOp.SUM:
-                        logger.debug(f"processing {len(requests)} sum requests")
+                        if logger.isEnabledFor(logging.DEBUG):
+                            logger.debug(f"processing {len(requests)} sum requests")
                         results = self.trie.batch_weight_sum(requests)
                     elif op == TrieOp.MAX:
-                        logger.debug(f"processing {len(requests)} max requests")
+                        if logger.isEnabledFor(logging.DEBUG):
+                            logger.debug(f"processing {len(requests)} max requests")
                         results = self.trie.batch_weight_max(requests)
                     else:
                         raise ValueError(f"Unknown trie operation: {op}")

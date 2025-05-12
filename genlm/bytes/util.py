@@ -1,9 +1,28 @@
+import html
 import numpy as np
 import pandas as pd
-
-from collections import OrderedDict
+from IPython.display import HTML, SVG
 
 from arsenal import colors
+
+
+class LazyByteProbs:
+    def __init__(self, ps, log_space=True):
+        assert len(ps) == 257  # 256 bytes + 1 EOT
+        self.ps = ps
+        self.log_space = log_space
+
+    def __getitem__(self, b):
+        if b is None:
+            return self.ps[-1]
+        return self.ps[b]
+
+    def materialize(self):
+        Q = Chart(-np.inf if self.log_space else 0)
+        for b, p in enumerate(self.ps[:-1]):
+            Q[b] = p
+        Q[None] = self.ps[-1]
+        return Q
 
 
 def logsumexp(arr):
@@ -22,35 +41,34 @@ def logsumexp(arr):
     return out
 
 
-def logmeanexp(xs):
-    """
-    Numerically stable implementation of log(mean(exp(xs))).
+def format_table(rows, headings=None):
+    def fmt(x):
+        if isinstance(x, (SVG, HTML)):
+            return x.data
+        elif hasattr(x, "_repr_html_"):
+            return x._repr_html_()
+        elif hasattr(x, "_repr_svg_"):
+            return x._repr_svg_()
+        elif hasattr(x, "_repr_image_svg_xml"):
+            return x._repr_image_svg_xml()
+        else:
+            return f"<pre>{html.escape(str(x))}</pre>"
 
-    Nptes:
-      log(mean(exp(xs)))
-      = log(sum(exp(xs))/n)
-      = log(sum(exp(xs))) - log(n)
-      = logsumexp(xs) - log(n)
-
-    """
-    return logsumexp(xs) - np.log(len(xs))
-
-
-def logsubexp(a, b):
-    """Compute log(exp(a) - exp(b)) in a numerically stable way.
-
-    Args:
-        a: First term (must be >= b)
-        b: Second term
-
-    Returns:
-        log(exp(a) - exp(b))
-    """
-    if a < b:
-        raise ValueError("logsubexp requires a >= b")
-    if np.isinf(a) and a < 0:
-        return -np.inf
-    return a + np.log1p(-np.exp(b - a))
+    return (
+        "<table>"
+        + (
+            '<tr style="font-weight: bold;">'
+            + "".join(f"<td>{x}</td>" for x in headings)
+            + "</tr>"
+            if headings
+            else ""
+        )
+        + "".join(
+            "<tr>" + "".join(f"<td>{fmt(x)}</td>" for x in row) + " </tr>"
+            for row in rows
+        )
+        + "</table>"
+    )
 
 
 class Chart(dict):
@@ -94,12 +112,12 @@ class Chart(dict):
             err = max(err, abs(self[x] - other[x]))
         return err
 
-    # def _repr_html_(self):
-    #     return (
-    #         '<div style="font-family: Monospace;">'
-    #         + format_table(self.trim().items(), headings=["key", "value"])
-    #         + "</div>"
-    #     )
+    def _repr_html_(self):
+        return (
+            '<div style="font-family: Monospace;">'
+            + format_table(self.trim().items(), headings=["key", "value"])
+            + "</div>"
+        )
 
     def __repr__(self):
         return repr({k: v for k, v in self.items() if v != self.zero})
@@ -200,72 +218,8 @@ class Chart(dict):
             rows.append(dict(key=x, self=self[x], other=other[x], metric=m))
         return pd.DataFrame(rows)
 
-
-class LRUCache:
-    """A cache that evicts the least recently used item when the cache is full."""
-
-    def __init__(self, cache_size=float("inf")):
-        """
-        Initialize the cache.
-
-        Args:
-            cache_size (int): The maximum number of items to store in the cache.
-        """
-        self.cache_size = cache_size
-        self.cache = OrderedDict()
-
-    def get(self, key):
-        """
-        Get an object for a given key, creating and caching it if necessary.
-
-        Args:
-            key (any): The key to retrieve.
-
-        Returns:
-            any: The cached or newly created object.
-        """
-        if key in self.cache:
-            self.cache.move_to_end(key)
-            return self.cache[key]
-
-        return
-
-    def set(self, key, obj):
-        """
-        Set an object for a given key.
-        """
-        self.cache[key] = obj
-
-        if len(self.cache) > self.cache_size:
-            old_key, old_obj = self.cache.popitem(last=False)
-            self.cleanup(old_key, old_obj)
-
-    def __contains__(self, key):
-        """
-        Check if a key exists in the cache.
-
-        Args:
-            key (any): The key to check.
-
-        Returns:
-            bool: True if key is in the cache, False otherwise.
-        """
-        return key in self.cache
-
-    def __getitem__(self, key):
-        """Alias for get()."""
-        obj = self.get(key)
-        if obj is None:
-            raise KeyError(key)
-        return obj
-
-    def __setitem__(self, key, obj):
-        """Alias for set()."""
-        self.set(key, obj)
-
-    @property
-    def keys(self):
-        return list(self.cache.keys())
+    def to_dict(self):
+        return {k: v for k, v in self.items()}
 
 
 def escape(x):
@@ -276,15 +230,3 @@ def escape(x):
     else:
         y = repr(x)[1:-1]
     return y.replace(" ", "␣")
-
-
-def flatten(d):
-    if len(d) == 0:
-        return []
-    if len(d) == 1:
-        return [d[0]]
-    return [*flatten(d[0]), d[1]]
-
-
-def flatten_escape(d):
-    return [escape(x) for x in flatten(d)]

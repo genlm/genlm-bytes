@@ -2,10 +2,11 @@ import asyncio
 import numpy as np
 from arsenal import colors
 from dataclasses import dataclass
+from scipy.special import logsumexp as scipy_logsumexp
 from functools import cached_property
 from genlm.backend.tokenization.bytes import get_byte_vocab
 
-from ..util import logsumexp, Chart
+from ..util import logsumexp, LazyByteProbs
 from ..trie import AsyncTokenByteTrie
 from .trie_state import LazyTrieState
 from .lm_state import StatefulByteLM
@@ -69,27 +70,23 @@ class ByteBeamState(StatefulByteLM):
         return new_state
 
     async def logp_next(self):
-        Q = Chart(-np.inf)
+        logqs = []
         for state in self:
-            for b, logp in state.logp_next.items():
-                if b is not None:
-                    Q[b] = np.logaddexp(Q[b], state.weight + logp)
+            logqs.append(state.logp_next.ps + state.weight)
 
         for state in await self.extend(self.logZ):
-            for b, logp in state.logp_next.items():
-                assert b is not None
-                Q[b] = np.logaddexp(Q[b], state.weight + logp)
+            logqs.append(state.logp_next.ps + state.weight)
 
-        Z = logsumexp(list(Q.values()))
-        for b in Q:
-            Q[b] -= Z
+        logqs = np.stack(logqs, axis=0)  # shape: (num_states, 257)
+        logqs[: len(self), -1] = -np.inf  # mask EOT positions of non-extended
+        logps = scipy_logsumexp(logqs, axis=0)
 
-        return Q
+        return LazyByteProbs(logps - logsumexp(logps))
 
     async def extend(self, logZ):
         extends = []
         for state in self:
-            if new_state := state.extend:
+            if new_state := state.extend():
                 logZ = np.logaddexp(logZ, new_state.weight)
                 extends.append(new_state)
 
@@ -115,3 +112,6 @@ class ByteBeamState(StatefulByteLM):
             color = colors.green if P > self.params.prune_threshold else colors.red
             desc += f"({color % f'{P:.4f}'}) {repr(state)}\n"
         return desc
+
+    async def cleanup(self):
+        await asyncio.gather(*[state.cleanup() for state in self])

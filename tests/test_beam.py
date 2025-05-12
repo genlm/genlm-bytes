@@ -106,3 +106,8 @@ async def test_weights(llm, prune_threshold):
             state = state.prune()
     finally:
         await state.cleanup()
+
+
+def test_invalid_prune_threshold():
+    with pytest.raises(ValueError):
+        BeamParams(K=1, prune_threshold=-0.1)

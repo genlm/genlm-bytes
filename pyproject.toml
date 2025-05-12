@@ -14,6 +14,7 @@ authors = []
 dependencies = [
     "genlm-backend>=0.1.1",
     "arsenal",
+    "IPython",
 ]
 
 [project.optional-dependencies]
