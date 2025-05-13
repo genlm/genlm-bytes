@@ -3,12 +3,12 @@
 <p align="center">
 <a href="https://genlm.github.io/genlm-bytes/"><img alt="Docs" src="https://github.com/genlm/genlm-bytes/actions/workflows/docs.yml/badge.svg"/></a>
 <a href="https://genlm.github.io/genlm-bytes/"><img alt="Tests" src="https://github.com/genlm/genlm-bytes/actions/workflows/pytest.yml/badge.svg"/></a>
-<a href="https://codecov.io/github/genlm/genlm-bytes" >  <img src="https://codecov.io/github/genlm/genlm-bytes/graph/badge.svg?token=3JuGDDv42y"/></a>
+<a href="https://codecov.io/github/genlm/genlm-bytes" >  <img src="https://codecov.io/github/genlm/genlm-bytes/graph/badge.svg?token=4atmwhxEeb"/></a>
 </p>
 
 GenLM Bytes is a Python library for byte-level language modeling. It contains algorithms for turning token-level language models into byte-level language models.
 
-See the [docs](https://genlm.github.io/genlm-bytes/) for more.
+See the [docs](https://genlm.github.io/genlm-bytes/) for details and [basic usage](https://genlm.github.io/genlm-bytes/usage).
 
 
 ## Usage
