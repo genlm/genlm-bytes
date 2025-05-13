@@ -46,6 +46,16 @@ class LazyByteProbs:
         Q[None] = self.ps[-1]
         return Q
 
+    def pretty(self):
+        """Returns a pretty string representation of the probability distribution.
+
+        Returns:
+            (str): Pretty string representation of the probability distribution
+        """
+        return self.materialize().map_keys(
+            lambda x: bytes([x]) if x is not None else "EOT"
+        )
+
 
 def logsumexp(arr):
     """
