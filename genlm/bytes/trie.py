@@ -97,7 +97,7 @@ class TokenByteTrie:
             int: Node indices in topological order
         """
         for a in self.children[node]:
-            if a:
+            if a is not None:
                 yield from self._order(self.children[node][a])
         yield node
 
