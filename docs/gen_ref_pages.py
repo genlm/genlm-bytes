@@ -4,7 +4,7 @@ import mkdocs_gen_files
 
 readme = Path("README.md")
 index_md = Path("docs/index.md")
-# logo = Path("assets/logo.png")
+logo = Path("assets/logo.png")
 
 
 def files_are_different(src: Path, dst: Path) -> bool:
@@ -16,8 +16,8 @@ def files_are_different(src: Path, dst: Path) -> bool:
 if readme.exists() and files_are_different(readme, index_md):
     shutil.copyfile(readme, index_md)
 
-# if logo.exists() and files_are_different(logo, Path("docs/assets/logo.png")):
-#     shutil.copyfile(logo, "docs/assets/logo.png")
+if logo.exists() and files_are_different(logo, Path("docs/assets/logo.png")):
+    shutil.copyfile(logo, "docs/assets/logo.png")
 
 nav = mkdocs_gen_files.Nav()
 
