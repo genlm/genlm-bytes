@@ -29,7 +29,7 @@ beam = await beam.prefill(b"An apple a day keeps the ")
 
 # Get the log probability distribution over the next byte.
 logp_next = await beam.logp_next()
-logp_next.pretty(5)
+logp_next.pretty().top(5)
 # Example output:
 # b'd' -0.5766762743944795
 # b'b' -2.8732729803080233
