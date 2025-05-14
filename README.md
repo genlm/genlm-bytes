@@ -3,12 +3,12 @@
 <p align="center">
 <a href="https://genlm.github.io/genlm-bytes/"><img alt="Docs" src="https://github.com/genlm/genlm-bytes/actions/workflows/docs.yml/badge.svg"/></a>
 <a href="https://genlm.github.io/genlm-bytes/"><img alt="Tests" src="https://github.com/genlm/genlm-bytes/actions/workflows/pytest.yml/badge.svg"/></a>
-<a href="https://codecov.io/github/genlm/genlm-bytes" >  <img src="https://codecov.io/github/genlm/genlm-bytes/graph/badge.svg?token=3JuGDDv42y"/></a>
+<a href="https://codecov.io/github/genlm/genlm-bytes" >  <img src="https://codecov.io/github/genlm/genlm-bytes/graph/badge.svg?token=4atmwhxEeb"/></a>
 </p>
 
 GenLM Bytes is a Python library for byte-level language modeling. It contains algorithms for turning token-level language models into byte-level language models.
 
-See the [docs](https://genlm.github.io/genlm-bytes/) for more.
+See the [docs](https://genlm.github.io/genlm-bytes/) for details and [basic usage](https://genlm.github.io/genlm-bytes/usage).
 
 
 ## Usage
@@ -29,7 +29,7 @@ beam = await beam.prefill(b"An apple a day keeps the ")
 
 # Get the log probability distribution over the next byte.
 logp_next = await beam.logp_next()
-logp_next.pretty(5)
+logp_next.pretty().top(5)
 # Example output:
 # b'd' -0.5766762743944795
 # b'b' -2.8732729803080233
