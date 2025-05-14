@@ -128,9 +128,10 @@ class ByteBeamState(StatefulByteLM):
         return LazyByteProbs(logps - logsumexp(logps))
 
     async def extend(self, logZ):
-        """Extends the beam candidates by a token (EOT).
+        """Attempts to advance each candidate in the beam by a token (EOT).
 
-        This ends the current token and starts a new one in preparation for the next byte.
+        For each candididate with EOT available, this ends the current token and 
+        starts a new one in preparation for the next byte.
 
         Args:
             logZ (float): Current estimated of the partition function for pruning
