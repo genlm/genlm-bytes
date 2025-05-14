@@ -18,7 +18,7 @@ from genlm.bytes import ByteBeamState, BeamParams
 from genlm.backend import load_model_by_name
 
 # Load a token-level language model from a huggingface model name
-# (Note: for GPU-accelerated inference, specify `backend="vllm"`)
+# (Note: for fast GPU inference, specify `backend="vllm"`)
 llm = load_model_by_name("gpt2-medium")
 
 # Initialize a beam state with a maximum beam width of 5 and a prune threshold of 0.05 (higher threshold values lead to more aggressive pruning).
