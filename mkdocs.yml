@@ -1,6 +1,9 @@
 site_name: GenLM Bytes
 theme:
   name: material
+  font:
+    text: Cabinet Grotesk # Default font for text
+    code: JetBrains Mono
   palette:
     # Palette toggle for light mode
     - scheme: default
