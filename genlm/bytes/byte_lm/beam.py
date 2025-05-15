@@ -14,6 +14,15 @@ from .lm_state import StatefulByteLM
 
 @dataclass
 class BeamParams:
+    """Parameters for byte-level beam summing algorithm.
+
+    Args:
+        K (int): Beam width - maximum number of candidates to maintain.
+        prune_threshold (float, optional): Probability threshold for pruning candidates.
+            Candidates with probability below this are removed. Defaults to 0.0
+        verbose (bool, optional): Whether to print the beam state at each step. Defaults to False
+    """
+
     K: int
     prune_threshold: float = 0.0
     verbose: bool = False
@@ -29,12 +38,31 @@ class BeamParams:
 
 
 class ByteBeamState(StatefulByteLM):
+    """Represents the state of the beam during byte-level language modeling.
+
+    Tracks multiple candidate states and their probabilities, pruning low-probability
+    candidates.
+
+    Args:
+        states (list[LazyTrieState]): List of candidate states to track
+        params (BeamParams): Parameters controlling beam search behavior
+    """
+
     def __init__(self, states, params):
         self.states = sorted(states, key=lambda b: -b.weight)
         self.params = params
 
     @classmethod
     async def initial(cls, llm, params):
+        """Creates initial beam state.
+
+        Args:
+            llm (StatefulTokenizedLM): Token-level language model to use.
+            params (BeamParams): Beam search parameters.
+
+        Returns:
+            (ByteBeamState): Initial beam state.
+        """
         state = LazyTrieState.initial(
             llm, AsyncTokenByteTrie.from_vocab(get_byte_vocab(llm.tokenizer))
         )
@@ -48,9 +76,20 @@ class ByteBeamState(StatefulByteLM):
 
     @cached_property
     def logZ(self):
+        """Estimate of the partition function (sum of weights) for current beam.
+        This is the estimate of the prefix probability of the bytes consumed so far.
+        """
         return logsumexp([state.weight for state in self])
 
     async def __lshift__(self, a):
+        """Advances the beam state with a new byte.
+
+        Args:
+            a (int): Byte to add to states.
+
+        Returns:
+            (ByteBeamState): New beam state after processing the byte.
+        """
         new_states = []
         for state in self:
             if new_state := state << a:
@@ -70,6 +109,11 @@ class ByteBeamState(StatefulByteLM):
         return new_state
 
     async def logp_next(self):
+        """Computes log probabilities for the next byte across all beam candidates.
+
+        Returns:
+            (LazyByteProbs): Log probabilities for next possible bytes.
+        """
         logqs = []
         for state in self:
             logqs.append(state.logp_next.ps + state.weight)
@@ -84,6 +128,17 @@ class ByteBeamState(StatefulByteLM):
         return LazyByteProbs(logps - logsumexp(logps))
 
     async def extend(self, logZ):
+        """Attempts to advance each candidate in the beam by a token (EOT).
+
+        For each candididate with EOT available, this ends the current token and 
+        starts a new one in preparation for the next byte.
+
+        Args:
+            logZ (float): Current estimated of the partition function for pruning
+
+        Returns:
+            (list[LazyTrieState]): New candidate states after extension
+        """
         extends = []
         for state in self:
             if new_state := state.extend():
@@ -98,6 +153,11 @@ class ByteBeamState(StatefulByteLM):
         return await asyncio.gather(*coros)
 
     def prune(self):
+        """Prunes beam to maintain beam width and probability threshold.
+
+        Returns:
+            (ByteBeamState): New state with pruned candidates.
+        """
         new_states = [
             state
             for state in self
@@ -114,4 +174,5 @@ class ByteBeamState(StatefulByteLM):
         return desc
 
     async def cleanup(self):
+        """Cleans up resources used by the candidates."""
         await asyncio.gather(*[state.cleanup() for state in self])

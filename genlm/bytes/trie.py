@@ -97,7 +97,7 @@ class TokenByteTrie:
             int: Node indices in topological order
         """
         for a in self.children[node]:
-            if a:
+            if a is not None:
                 yield from self._order(self.children[node][a])
         yield node
 
@@ -233,7 +233,7 @@ class TokenByteTrie:
             ws (torch.Tensor): Token weights, shape (`len(self.decode)`,).
 
         Returns:
-            (numpy.ndarray): Summed weights for each node in the trie, shape (`len(self.decode)`,).
+            (numpy.ndarray): Summed weights for each node in the trie, shape (num_nodes,).
         """
         return self.batch_weight_sum(self._preprocess_ws([ws]))[0]
 
@@ -257,7 +257,7 @@ class TokenByteTrie:
             ws (torch.Tensor): Token weights, shape (`len(self.decode)`,).
 
         Returns:
-            (numpy.ndarray): Maximum weights for each node in the trie, shape (`len(self.decode)`,).
+            (numpy.ndarray): Maximum weights for each node in the trie, shape (num_nodes,).
         """
         return self.batch_weight_max(self._preprocess_ws([ws]))[0]
 

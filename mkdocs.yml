@@ -1,0 +1,53 @@
+site_name: GenLM Bytes
+theme:
+  name: material
+  font:
+    text: Cabinet Grotesk # Default font for text
+    code: JetBrains Mono
+  palette:
+    # Palette toggle for light mode
+    - scheme: default
+      accent: blue
+      primary: white
+
+plugins:
+  - search
+  - gen-files:
+      scripts:
+        - docs/gen_ref_pages.py
+  - literate-nav:
+      nav_file: SUMMARY.md
+  - mkdocstrings:
+      handlers:
+        python:
+          options:
+            members_order: source
+            members_order_submodules: source
+            group_by_category: false
+            show_protocols: true
+  - section-index
+  - mkdocs-jupyter:
+      execute: false
+      allow_errors: false
+      highlight_extra_classes: "custom-css-classes"
+      include_source: true
+
+nav:
+  - Home: index.md
+  - API Reference: reference/
+  - Basic Usage: usage.ipynb
+
+markdown_extensions:
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences
+  - admonition
+  - pymdownx.details
+  - pymdownx.arithmatex:
+      generic: true
+  - footnotes
+  - md_in_html
+
+repo_url: https://github.com/genlm/genlm-bytes

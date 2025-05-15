@@ -7,22 +7,54 @@ from arsenal import colors
 
 
 class LazyByteProbs:
+    """Represents a lazy (log) probability distribution over bytes.
+
+    Handles probability distributions over 256 possible bytes plus an EOT (End of Token) symbol.
+
+    Args:
+        ps (list): List of 257 probabilities (256 bytes + 1 EOT)
+        log_space (bool, optional): Whether probabilities are in log space. Defaults to True
+    """
+
     def __init__(self, ps, log_space=True):
         assert len(ps) == 257  # 256 bytes + 1 EOT
         self.ps = ps
         self.log_space = log_space
 
     def __getitem__(self, b):
+        """Get probability for a byte or EOT.
+
+        Args:
+            b (int|None): Byte value or None for EOT
+
+        Returns:
+            (float): Probability (or log probability) for the byte/EOT
+        """
         if b is None:
             return self.ps[-1]
         return self.ps[b]
 
     def materialize(self):
+        """Materializes the probability distribution into a Chart.
+
+        Returns:
+            (Chart): Chart with probabilities for each byte/EOT
+        """
         Q = Chart(-np.inf if self.log_space else 0)
         for b, p in enumerate(self.ps[:-1]):
             Q[b] = p
         Q[None] = self.ps[-1]
         return Q
+
+    def pretty(self):
+        """Returns a pretty string representation of the probability distribution.
+
+        Returns:
+            (str): Pretty string representation of the probability distribution
+        """
+        return self.materialize().map_keys(
+            lambda x: bytes([x]) if x is not None else "EOT"
+        )
 
 
 def logsumexp(arr):
@@ -72,6 +104,16 @@ def format_table(rows, headings=None):
 
 
 class Chart(dict):
+    """A specialized dictionary for managing probability distributions.
+
+    Extends dict with operations useful for probability distributions and numeric computations,
+    including arithmetic operations, normalization, and visualization.
+
+    Args:
+        zero (Any): Default value for missing keys
+        vals (tuple, optional): Initial (key, value) pairs
+    """
+
     def __init__(self, zero, vals=()):
         self.zero = zero
         super().__init__(vals)
