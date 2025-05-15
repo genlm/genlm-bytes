@@ -1,5 +1,6 @@
 from .byte_lm import ByteBeamState, LazyTrieState, StatefulTokenizedLM, BeamParams
 from .trie import TokenByteTrie, AsyncTokenByteTrie
+from .util import Chart
 
 __all__ = [
     "ByteBeamState",
@@ -8,4 +9,5 @@ __all__ = [
     "BeamParams",
     "TokenByteTrie",
     "AsyncTokenByteTrie",
+    "Chart",
 ]
