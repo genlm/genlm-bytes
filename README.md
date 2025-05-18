@@ -36,6 +36,9 @@ logp_next.pretty().top(5)
 # b's' -2.9816068063730867
 # b'w' -3.3758250127787264
 # b'm' -3.528177345847574
+
+# Prune the beam and extend it with a new byte
+new_beam = await (beam.prune() << 100) # 100 is the byte value of 'd'
 ```
 
 See [basic usage](https://genlm.github.io/genlm-bytes/usage) for a more detailed example.
