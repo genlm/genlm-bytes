@@ -9,16 +9,17 @@ from arsenal import colors
 class LazyByteProbs:
     """Represents a lazy (log) probability distribution over bytes.
 
-    Handles probability distributions over 256 possible bytes plus an EOT (End of Token) symbol.
+    Handles probability distributions over bytes plus an EOT (End of Token) symbol.
 
     Args:
-        ps (list): List of 257 probabilities (256 bytes + 1 EOT)
+        ps (list): List of probabilities
         log_space (bool, optional): Whether probabilities are in log space. Defaults to True
     """
 
-    def __init__(self, ps, log_space=True):
-        assert len(ps) == 257  # 256 bytes + 1 EOT
+    def __init__(self, ps, encode, decode, log_space=True):
         self.ps = ps
+        self.encode = encode
+        self.decode = decode
         self.log_space = log_space
 
     def __getitem__(self, b):
@@ -30,9 +31,7 @@ class LazyByteProbs:
         Returns:
             (float): Probability (or log probability) for the byte/EOT
         """
-        if b is None:
-            return self.ps[-1]
-        return self.ps[b]
+        return self.ps[self.encode[b]]
 
     def materialize(self):
         """Materializes the probability distribution into a Chart.
@@ -41,9 +40,8 @@ class LazyByteProbs:
             (Chart): Chart with probabilities for each byte/EOT
         """
         Q = Chart(-np.inf if self.log_space else 0)
-        for b, p in enumerate(self.ps[:-1]):
+        for b, p in zip(self.decode, self.ps):
             Q[b] = p
-        Q[None] = self.ps[-1]
         return Q
 
     def pretty(self):
@@ -53,7 +51,7 @@ class LazyByteProbs:
             (str): Pretty string representation of the probability distribution
         """
         return self.materialize().map_keys(
-            lambda x: bytes([x]) if x is not None else "EOT"
+            lambda x: bytes([x]) if x in range(256) else ("EOT" if x is None else x)
         )
 
 

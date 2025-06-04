@@ -133,12 +133,18 @@ class StatefulByteLM(ABC):
         """
         context = list(context)
         state = await self.prefill(context)
+        eos_tokens = self.states[0].trie.trie.eos_tokens
         for _ in range(steps):
             Q = (await state.logp_next()).materialize()
             b = Q.argmax()
             state = await (state.prune() << b)
             context.append(b)
-        return bytes(context)
+            if b in eos_tokens:
+                break
+        return b''.join(
+            bytes([item]) if isinstance(item, int) else item
+            for item in context
+        )
 
     async def sample(self, context, steps, draw=sample_dict):
         """Samples from the model for given number of steps.
@@ -153,12 +159,19 @@ class StatefulByteLM(ABC):
         """
         context = list(context)
         state = await self.prefill(context)
+        eos_tokens = self.states[0].trie.trie.eos_tokens
         for _ in range(steps):
             Q = (await state.logp_next()).materialize()
             b = draw(Q.map_values(exp))
             state = await (state.prune() << b)
             context.append(b)
-        return bytes(context)
+            if b in eos_tokens:
+                break
+        return b''.join(
+            bytes([item]) if isinstance(item, int) else item
+            for item in context
+        )
+
 
     async def cleanup(self):
         """Performs any necessary cleanup of the model state."""

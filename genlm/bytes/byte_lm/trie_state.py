@@ -3,7 +3,7 @@ import numpy as np
 from functools import cached_property
 from arsenal import colors
 from .lm_state import StatefulTokenizedLM
-from ..util import escape, LazyByteProbs
+from ..util import escape, LazyByteProbs, logsumexp
 
 
 class LazyTrieState:
@@ -87,12 +87,25 @@ class LazyTrieState:
         """
         if node := self.children[self.node].get(b):
             mass = self.mass
+            if b in self.trie.trie.eos_tokens:
+                cum_eos_logprob = logsumexp(
+                    self.mass[
+                        [
+                            result
+                            for eos_token in self.trie.trie.eos_tokens
+                            if (result := self.children[self.node].get(eos_token)) is not None
+                        ]
+                    ]
+                )
+                node_mass = cum_eos_logprob
+            else:
+                node_mass = mass[node]
             return LazyTrieState(
                 lm_state=self.lm_state,
                 trie=self.trie,
                 mass=mass,
                 node=node,
-                weight=self.weight + mass[node] - mass[self.node],
+                weight=self.weight + node_mass - mass[self.node],
             )
 
     def extend(self):
@@ -120,12 +133,14 @@ class LazyTrieState:
         Returns:
             (LazyByteProbs): Lazy log probability distribution over possible next bytes
         """
-        logps = np.full(257, -np.inf)  # 257 for EOT
+        logps = np.full(len(self.trie.trie.trie_encode), -np.inf)
         mass = self.mass
         logZ = mass[self.node]
         for byte, node in self.actions().items():
-            logps[byte if byte is not None else 256] = mass[node] - logZ
-        return LazyByteProbs(logps)
+            logps[self.trie.trie.trie_encode[byte]] = mass[node] - logZ
+        return LazyByteProbs(
+            logps, encode=self.trie.trie.trie_encode, decode=self.trie.trie.trie_decode
+        )
 
     async def materialize(self):
         """Materializes the masses for each node in the trie for the current state.

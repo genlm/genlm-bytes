@@ -11,7 +11,9 @@ logger = logging.getLogger(__name__)
 class TokenByteTrie:
     """A trie data structure for efficient token-to-byte mapping."""
 
-    def __init__(self, decode, device=None, atomic_tokens=None, eot_token=None):
+    def __init__(
+        self, decode, device=None, atomic_tokens=None, eot_token=None, eos_tokens=None
+    ):
         """Initialize a `TokenByteTrie`.
 
         Args:
@@ -27,6 +29,7 @@ class TokenByteTrie:
             raise ValueError(f"Invalid device: {device}. Must be 'cpu', 'cuda' or None")
 
         self.eot_token = eot_token
+        self.eos_tokens = eos_tokens
         self._build_trie(atomic_tokens or [])
         self._renumber()
         self._build_node2prefix()
@@ -44,7 +47,18 @@ class TokenByteTrie:
         for token in atomic_tokens:
             if token not in self.decode:
                 raise ValueError(f"Atomic token {token} not in vocabulary")
+        for token in self.eos_tokens:
+            if token not in self.decode:
+                raise ValueError(f"EOS token {token} not in vocabulary")
 
+        # construct mappings from byte vocab to indices in weight array
+        self.trie_decode = (
+            list(range(256)) + atomic_tokens + self.eos_tokens + [self.eot_token]
+        )
+        self.trie_encode = {
+            k: v for k, v in zip(self.trie_decode, list(range(len(self.trie_decode))))
+        }
+        self.weight_encode = {}
         self.word2leaf = {}
         self.children = [{}]  # First node is root
         self.root = 0
@@ -57,7 +71,8 @@ class TokenByteTrie:
             self.lookup[word] = token_id
 
             curr = self.root
-            letters = [word] if word in atomic_tokens else word
+
+            letters = [word] if word in atomic_tokens + self.eos_tokens else word
             for letter in letters:
                 if letter not in self.children[curr]:
                     self.children[curr][letter] = len(self.children)
@@ -211,7 +226,7 @@ class TokenByteTrie:
         """Preprocess weight sums for batch processing.
 
         Args:
-            batch_ws (list|np.ndarray|torch.Tensor): List of weight sum tensors or lists of weight sums.
+            batch_ws (list|np.ndarray|torch.Tensor): List of weight sum tensors or lists of 8 sums.
 
         Returns:
             (torch.Tensor): Stacked weight sum tensor.

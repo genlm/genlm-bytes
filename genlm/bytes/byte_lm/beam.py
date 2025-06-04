@@ -53,7 +53,7 @@ class ByteBeamState(StatefulByteLM):
         self.params = params
 
     @classmethod
-    async def initial(cls, llm, params):
+    async def initial(cls, llm, params, eos_tokens=None):
         """Creates initial beam state.
 
         Args:
@@ -63,8 +63,17 @@ class ByteBeamState(StatefulByteLM):
         Returns:
             (ByteBeamState): Initial beam state.
         """
+        eos_tokens = (
+            [llm.tokenizer.eos_token.encode("utf-8")]
+            if eos_tokens is None
+            else eos_tokens
+        )
         state = LazyTrieState.initial(
-            llm, AsyncTokenByteTrie.from_vocab(get_byte_vocab(llm.tokenizer))
+            llm,
+            AsyncTokenByteTrie.from_vocab(
+                get_byte_vocab(llm.tokenizer),
+                eos_tokens=eos_tokens,
+            ),
         )
         return cls([await state.materialize()], params)
 
@@ -121,16 +130,19 @@ class ByteBeamState(StatefulByteLM):
         for state in await self.extend(self.logZ):
             logqs.append(state.logp_next.ps + state.weight)
 
-        logqs = np.stack(logqs, axis=0)  # shape: (num_states, 257)
+        logqs = np.stack(logqs, axis=0)
         logqs[: len(self), -1] = -np.inf  # mask EOT positions of non-extended
         logps = scipy_logsumexp(logqs, axis=0)
 
-        return LazyByteProbs(logps - logsumexp(logps))
+        # byte-encode and decode are the same across states
+        encode = self.states[0].trie.trie.trie_encode
+        decode = self.states[0].trie.trie.trie_decode
+        return LazyByteProbs(logps - logsumexp(logps), encode=encode, decode=decode)
 
     async def extend(self, logZ):
         """Attempts to advance each candidate in the beam by a token (EOT).
 
-        For each candididate with EOT available, this ends the current token and 
+        For each candididate with EOT available, this ends the current token and
         starts a new one in preparation for the next byte.
 
         Args:
