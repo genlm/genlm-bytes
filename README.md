@@ -10,6 +10,21 @@ GenLM Bytes is a Python library for byte-level language modeling. It contains al
 
 See the [docs](https://genlm.github.io/genlm-bytes/) for details and [basic usage](https://genlm.github.io/genlm-bytes/usage).
 
+## Quick Start
+
+This library requires python>=3.11 and can be installed using pip:
+
+```bash
+pip install genlm-bytes
+```
+
+For faster and less error-prone installs, consider using [`uv`](https://github.com/astral-sh/uv):
+
+```bash
+uv pip install genlm-bytes
+```
+
+See [DEVELOPING.md](DEVELOPING.md) for details on how to install the project for development.
 
 ## Usage
 
@@ -42,13 +57,3 @@ new_beam = await (beam.prune() << 100) # 100 is the byte value of 'd'
 ```
 
 See [basic usage](https://genlm.github.io/genlm-bytes/usage) for a more detailed example.
-
-## Installation
-
-*Note: This library is still under active development.*
-
-```bash
-git clone https://github.com/genlm/genlm-bytes.git
-cd genlm-bytes
-pip install -e .
-```
