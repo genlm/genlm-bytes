@@ -57,7 +57,6 @@ class StatefulTokenizedLM:
             self.model, self.context + [token], n_calls=self._n_calls
         )
 
-    @property
     async def logp_next(self):
         """Computes log probabilities for the next token given the current context.
 
