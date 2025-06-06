@@ -31,18 +31,18 @@ uv pip install -e ".[test,docs]"
 
 It is also recommended to use a dedicated environment.
 
-With conda:
-```bash
-conda create -n genlm python=3.11
-conda activate genlm
-uv pip install -e ".[test,docs]"
-```
-
-With uv:
+With uv (recommended):
 ```bash
 uv venv .venv --python 3.11
 source .venv/bin/activate
 uv pip install -e ".[test,docs]"
+```
+
+With conda:
+```bash
+conda create -n genlm python=3.11
+conda activate genlm
+pip install -e ".[test,docs]"
 ```
 
 
