@@ -1,5 +1,5 @@
 import asyncio
-from typing import Callable, Literal, List, Tuple
+from typing import Callable, Literal, List, Tuple, Union
 from collections import defaultdict
 
 import numpy as np
@@ -8,6 +8,7 @@ from arsenal.maths import logsumexp
 
 from genlm.backend import load_model_by_name
 from genlm.bytes import ByteBeamState, BeamParams
+from genlm.bytes.util import split_with_atomic_tokens
 from genlm.control import Potential
 from genlm.control.sampler.token import TokenSampler
 from genlm.control.util import fast_sample_logprobs
@@ -43,6 +44,10 @@ class ByteEnsemble(Potential):
         self.op = op
         self.data_dict_1 = data_dict_1
         self.data_dict_2 = data_dict_2
+        self.eos_tokens = (
+            [self.p1.byte_vocab[self.p1.tokenizer.eos_token_id]]
+            + [self.p2.byte_vocab[self.p2.tokenizer.eos_token_id]]
+        )
         super().__init__(vocabulary=vocab)
 
     @classmethod
@@ -55,18 +60,28 @@ class ByteEnsemble(Potential):
         async def setup():
             beam1, beam2 = await asyncio.gather(
                 ByteBeamState.initial(llm1, beam_params),
-                ByteBeamState.initial(llm2, beam_params)
+                ByteBeamState.initial(llm2, beam_params),
             )
             return await asyncio.gather(beam1.prefill(prompt1), beam2.prefill(prompt2))
 
         beam_state_1, beam_state_2 = await setup()
         data_dict_1[b""] = beam_state_1
         data_dict_2[b""] = beam_state_2
-        return cls(llm1, llm2, convert_to_logop(op), data_dict_1, data_dict_2, vocab=list(range(256)))
+        return cls(
+            llm1,
+            llm2,
+            convert_to_logop(op),
+            data_dict_1,
+            data_dict_2,
+            vocab=list(range(256)),
+        )
 
     async def _cleanup_cache(self):
         """Remove old entries to avoid cache bloat."""
-        max_len = max((len(k) for k in self.data_dict_1), default=0)
+        max_len = max(
+            (len(split_with_atomic_tokens(k, self.eos_tokens)) for k in self.data_dict_1),
+            default=0,
+        )
         min_len = max_len - 2
         for d in [self.data_dict_1, self.data_dict_2]:
             for k in list(d.keys()):
@@ -78,7 +93,7 @@ class ByteEnsemble(Potential):
         ctx_bytes = bytes(context)
         await self._cleanup_cache()
         return self.data_dict_1[ctx_bytes], self.data_dict_2[ctx_bytes]
-    
+
     async def prefix(self, context: List[int]):
         """Stub for abstract method."""
         return None  # or raise NotImplementedError if you're sure it's never needed
@@ -142,7 +157,9 @@ class ByteEnsembleTokenSampler(TokenSampler):
         logws2 = log_context_weight_2 + logp_2.ps
 
         log_shaping_weight_prev = (
-            0 if not context else self.potential.op(log_context_weight_1, log_context_weight_2)
+            0
+            if not context
+            else self.potential.op(log_context_weight_1, log_context_weight_2)
         )
 
         proposal_weights = self.potential.op(logws1, logws2) - log_shaping_weight_prev
@@ -152,7 +169,11 @@ class ByteEnsembleTokenSampler(TokenSampler):
         token = beam1.states[0].trie.trie.trie_decode[token_idx]
         assert token == beam2.states[0].trie.trie.trie_decode[token_idx]
 
-        next_context = bytes(context + [token]) if isinstance(token, int) else bytes(context) + token
+        next_context = (
+            bytes(context + [token])
+            if isinstance(token, int)
+            else bytes(context) + token
+        )
         self.potential.data_dict_1[next_context] = await (beam1.prune() << token)
         self.potential.data_dict_2[next_context] = await (beam2.prune() << token)
 
@@ -160,16 +181,26 @@ class ByteEnsembleTokenSampler(TokenSampler):
         self.prefix_cache_1[new_ctx_tuple] = logws1[token_idx]
         self.prefix_cache_2[new_ctx_tuple] = logws2[token_idx]
 
-        if token in self.eos_tokens or (self.max_tokens and len(context) + 1 == self.max_tokens):
+        if token in self.eos_tokens:
             token = EOS
-            self.particle_prefix_log_prob_1[ctx_tuple + (EOS,)] = logws1[token_idx]
-            self.particle_prefix_log_prob_2[ctx_tuple + (EOS,)] = logws2[token_idx]
+
+        if token == EOS or (self.max_tokens and len(ctx_tuple) + 1 == self.max_tokens):
+            self.particle_prefix_log_prob_1[ctx_tuple + (token,)] = logws1[token_idx]
+            self.particle_prefix_log_prob_2[ctx_tuple + (token,)] = logws2[token_idx]
 
         return token, proposal_weights[token_idx] - logps[token_idx], logps[token_idx]
 
-    async def smc(self, n_particles: int, ess_threshold: float, max_tokens: int, critic=None, **kwargs):
+    async def smc(
+        self,
+        n_particles: int,
+        ess_threshold: float,
+        max_tokens: int,
+        critic=None,
+        **kwargs,
+    ):
         """Run Sequential Monte Carlo inference."""
         from genlm.control.sampler.sequence import EnsembleSMC
+
         return await EnsembleSMC(self, critic)(
             n_particles=n_particles,
             ess_threshold=ess_threshold,
@@ -182,21 +213,28 @@ async def main():
     llm1 = load_model_by_name("meta-llama/Llama-3.2-1B-Instruct")
     llm2 = load_model_by_name("meta-llama/Llama-3.2-1B-Instruct")
 
-    prompt1 = b"London is "
-    prompt2 = b"Paris is "
+    prompt1 = (
+        b"London is good." + llm1.byte_vocab[llm1.tokenizer.eos_token_id] + b"Paris is "
+    )
+    prompt2 = (
+        b"London is good." + llm2.byte_vocab[llm1.tokenizer.eos_token_id] + b"Paris is "
+    )
 
-    ensemble = await ByteEnsemble.create(llm1, llm2, op="prod", prompt1=prompt1, prompt2=prompt2)
-
+    ensemble = await ByteEnsemble.create(
+        llm1, llm2, op="prod", prompt1=prompt1, prompt2=prompt2
+    )
+    max_tokens = 25
     eos_tokens = [
         llm1.byte_vocab[llm1.tokenizer.eos_token_id],
         llm2.byte_vocab[llm2.tokenizer.eos_token_id],
     ]
     sampler = ByteEnsembleTokenSampler(
-        ensemble, max_tokens=20, eos_tokens=eos_tokens, n_particles=5
+        ensemble, max_tokens=max_tokens, eos_tokens=eos_tokens, n_particles=5
     )
 
-    result = await sampler.smc(n_particles=5, ess_threshold=0.9, max_tokens=20)
+    result = await sampler.smc(n_particles=10, ess_threshold=0.5, max_tokens=max_tokens)
     print(result.posterior)
+    print(result.decoded_posterior)
 
 
 if __name__ == "__main__":

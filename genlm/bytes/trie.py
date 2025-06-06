@@ -30,6 +30,7 @@ class TokenByteTrie:
 
         self.eot_token = eot_token
         self.eos_tokens = eos_tokens
+        self.atomic_tokens = atomic_tokens
         self._build_trie(atomic_tokens or [])
         self._renumber()
         self._build_node2prefix()

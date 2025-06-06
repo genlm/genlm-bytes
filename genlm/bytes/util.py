@@ -2,6 +2,8 @@ import html
 import numpy as np
 import pandas as pd
 from IPython.display import HTML, SVG
+from typing import Union
+import warnings
 
 from arsenal import colors
 
@@ -270,3 +272,60 @@ def escape(x):
     else:
         y = repr(x)[1:-1]
     return y.replace(" ", "␣")
+
+
+def split_with_atomic_tokens(data: bytes, atomic_tokens: list[bytes]) -> list[Union[int, bytes]]:
+    """
+    Splits a bytestring into a list of either individual bytes (as integers) or atomic tokens (as bytes),
+    depending on whether the current position matches an atomic token.
+
+    Args:
+        data (bytes): The input byte string to split.
+        atomic_tokens (list[bytes]): A list of byte substrings that are treated as indivisible atomic tokens.
+
+    Returns:
+        list[Union[int, bytes]]: A list where each element is either:
+            - an atomic token (as bytes) if a match is found at that position,
+            - or a single byte (as an int) if no atomic token matches.
+
+    Notes:
+        - Matching is greedy but only left-to-right: at each position, the function checks for atomic token matches
+          starting from length 1 up to the maximum token length.
+        - Only the first match (shortest prefix match) is used; longer overlapping tokens may be missed if a shorter
+          prefix matches first.
+        - If atomic tokens overlap (e.g., b"A" and b"AB"), a warning is raised and only the shortest prefix match
+          will be used.
+
+    Example:
+        >>> split_with_atomic_tokens(b"ABC", [b"A", b"AB"])
+        [b'A', 66, 67]  # b"AB" is not matched because b"A" matched first
+    """
+    # Detect overlapping atomic tokens
+    for i, token1 in enumerate(atomic_tokens):
+        for j, token2 in enumerate(atomic_tokens):
+            if i != j and (token1.startswith(token2) or token2.startswith(token1)):
+                warnings.warn(
+                    f"Overlapping atomic tokens detected: {token1!r} and {token2!r}. "
+                    "Only the shortest matching prefix will be used."
+                )
+                break  # One warning is enough
+
+    result = []
+    i = 0
+    token_set = set(atomic_tokens)
+    max_len = max(len(t) for t in atomic_tokens) if atomic_tokens else 0
+
+    while i < len(data):
+        matched = False
+        for length in range(1, max_len + 1):
+            fragment = data[i:i+length]
+            if fragment in token_set:
+                result.append(fragment)
+                i += length
+                matched = True
+                break
+        if not matched:
+            result.append(data[i])
+            i += 1
+
+    return result

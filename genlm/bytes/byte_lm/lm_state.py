@@ -3,7 +3,7 @@ from arsenal import colors
 from abc import ABC, abstractmethod
 from arsenal.maths import sample_dict
 
-from ..util import escape
+from ..util import escape, split_with_atomic_tokens
 
 
 class StatefulTokenizedLM:
@@ -117,7 +117,9 @@ class StatefulByteLM(ABC):
             (StatefulByteLM): New state with all bytes added
         """
         state = self
-        for b in bs:
+        trie = state.states[0].trie.trie
+        atomic_tokens = (trie.atomic_tokens or []) + (trie.eos_tokens or [])
+        for b in split_with_atomic_tokens(bs, atomic_tokens):
             state = await (state.prune() << b)
         return state
 
