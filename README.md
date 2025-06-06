@@ -10,6 +10,8 @@ GenLM Bytes is a Python library for byte-level language modeling. It contains al
 
 See the [docs](https://genlm.github.io/genlm-bytes/) for details and [basic usage](https://genlm.github.io/genlm-bytes/usage).
 
+*Note: This project is under active development — expect bugs, missing features, and breaking changes. Please report any issues or suggestions in the issue tracker.*
+
 ## Quick Start
 
 This library requires python>=3.11 and can be installed using pip:
