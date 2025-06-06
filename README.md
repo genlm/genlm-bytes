@@ -26,7 +26,7 @@ For faster and less error-prone installs, consider using [`uv`](https://github.c
 uv pip install genlm-bytes
 ```
 
-See [DEVELOPING.md](DEVELOPING.md) for details on how to install the project for development.
+See [DEVELOPING.md](https://github.com/genlm/genlm-bytes/blob/main/DEVELOPING.md) for details on how to install the project for development.
 
 ## Usage
 
