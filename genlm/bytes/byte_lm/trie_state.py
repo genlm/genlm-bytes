@@ -136,9 +136,10 @@ class LazyTrieState:
             (LazyTrieState): Self with materialized masses
         """
         if self._mass is None:
-            logp_next = await self.lm_state.logp_next
-            mass = torch.log(await self.trie.weight_sum(torch.exp(logp_next)))
-            self._mass = mass.detach().cpu().numpy()
+            logp_next = await self.lm_state.logp_next()
+            log_mass = await self.trie.weight_sum(torch.exp(logp_next))
+            mass = torch.log(log_mass)
+            self._mass = mass.cpu().numpy()
         return self
 
     def __repr__(self):
