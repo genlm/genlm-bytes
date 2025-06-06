@@ -53,18 +53,23 @@ class ByteBeamState(StatefulByteLM):
         self.params = params
 
     @classmethod
-    async def initial(cls, llm, params):
+    async def initial(cls, llm, params, trie_opts=None):
         """Creates initial beam state.
 
         Args:
             llm (StatefulTokenizedLM): Token-level language model to use.
             params (BeamParams): Beam search parameters.
+            trie_opts (dict, optional): Additional keyword arguments passed to
+                AsyncTokenByteTrie.from_vocab. For example, {"max_batch_size": 100}.
 
         Returns:
             (ByteBeamState): Initial beam state.
         """
         state = LazyTrieState.initial(
-            llm, AsyncTokenByteTrie.from_vocab(get_byte_vocab(llm.tokenizer))
+            llm,
+            AsyncTokenByteTrie.from_vocab(
+                get_byte_vocab(llm.tokenizer, **(trie_opts or {}))
+            ),
         )
         return cls([await state.materialize()], params)
 
