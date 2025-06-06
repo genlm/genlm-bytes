@@ -11,7 +11,9 @@ def llm():
 
 @pytest.mark.asyncio
 async def test_basics(llm):
-    state = await ByteBeamState.initial(llm, BeamParams(K=5))
+    state = await ByteBeamState.initial(
+        llm, BeamParams(K=5), trie_opts={"max_batch_size": 100}
+    )
 
     try:
         result = await state.greedy(b"An apple a day keeps ", steps=20)
