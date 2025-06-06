@@ -11,7 +11,9 @@ logger = logging.getLogger(__name__)
 class TokenByteTrie:
     """A trie data structure for efficient token-to-byte mapping."""
 
-    def __init__(self, decode, device=None, atomic_tokens=None, eot_token=None):
+    def __init__(
+        self, decode, device=None, atomic_tokens=None, eot_token=None, max_batch_size=64
+    ):
         """Initialize a `TokenByteTrie`.
 
         Args:
@@ -19,8 +21,10 @@ class TokenByteTrie:
             device (str, optional): Device to use for weight sum and max computations ('cpu' or 'cuda').
             atomic_tokens (list[bytes], optional): List of tokens that should be treated as atomic units rather than being split into bytes.
             eot_token (bytes|None, optional): End-of-token token. Default is None, which represents EOT as None.
+            max_batch_size (int, optional): Maximum batch size for weight sum sparse matrix multiplication.
         """
         self.decode = decode
+        self.max_batch_size = max_batch_size
 
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         if self.device not in ["cpu", "cuda"]:
@@ -247,8 +251,15 @@ class TokenByteTrie:
             (numpy.ndarray): Summed weights for each node in the trie, shape (batch_size × num_nodes).
         """
         ws = self._preprocess_ws(ws)
-        masses = torch.sparse.mm(ws[:, self.token_ids], self.M)
-        return masses
+        batch_size = ws.shape[0]
+        all_masses = []
+        # If you are getting illegal memory access errors here,
+        # try reducing the max_batch_size.
+        for i in range(0, batch_size, self.max_batch_size):
+            batch_ws = ws[i : i + self.max_batch_size]
+            masses = torch.sparse.mm(batch_ws[:, self.token_ids], self.M)
+            all_masses.append(masses)
+        return torch.cat(all_masses, dim=0)
 
     def weight_max(self, ws):
         """Computes the maximum weight of all descendant leaf nodes (tokens) for each node in the trie.
