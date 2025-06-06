@@ -10,7 +10,7 @@ dynamic = ["version"]
 description = "Algorithms for byte-level language modeling"
 readme = "README.md"
 requires-python = ">=3.11"
-authors = ["Ben LeBrun", "Tim Vieira"]
+authors = [ { name = "Ben LeBrun", email = "benlebrun1@gmail.com" }, { name = "Tim Vieira"} ]
 dependencies = [
     "genlm-backend>=0.1.1",
     "arsenal",
