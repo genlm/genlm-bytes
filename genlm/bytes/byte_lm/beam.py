@@ -114,6 +114,8 @@ class ByteBeamState(StatefulByteLM):
         Returns:
             (LazyByteProbs): Log probabilities for next possible bytes.
         """
+        assert len(self) > 0, "Beam is empty"
+
         logqs = []
         for state in self:
             logqs.append(state.logp_next.ps + state.weight)
@@ -130,7 +132,7 @@ class ByteBeamState(StatefulByteLM):
     async def extend(self, logZ):
         """Attempts to advance each candidate in the beam by a token (EOT).
 
-        For each candididate with EOT available, this ends the current token and 
+        For each candididate with EOT available, this ends the current token and
         starts a new one in preparation for the next byte.
 
         Args:
