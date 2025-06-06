@@ -3,6 +3,71 @@
 This guide describes how to complete various tasks you'll encounter when working
 on the `genlm-bytes` codebase.
 
+## Requirements
+
+- Python >= 3.11
+- The core dependencies listed in the `pyproject.toml` file of the repository.
+
+## Installation
+
+Clone the repository:
+```bash
+git clone git@github.com:genlm/genlm-bytes.git
+cd genlm-bytes
+```
+and install with pip:
+
+```bash
+pip install -e ".[test,docs]"
+```
+
+This installs the dependencies needed for testing (test) and documentation (docs).
+
+For faster and less error-prone installs, consider using [`uv`](https://github.com/astral-sh/uv):
+
+```bash
+uv pip install -e ".[test,docs]"
+```
+
+It is also recommended to use a dedicated environment.
+
+With conda:
+```bash
+conda create -n genlm python=3.11
+conda activate genlm
+uv pip install -e ".[test,docs]"
+```
+
+With uv:
+```bash
+uv venv .venv --python 3.11
+source .venv/bin/activate
+uv pip install -e ".[test,docs]"
+```
+
+
+## Testing
+
+When test dependencies are installed, the test suite can be run via:
+
+```bash
+pytest tests
+```
+
+## Documentation
+
+Documentation is generated using [mkdocs](https://www.mkdocs.org/) and hosted on GitHub Pages. To build the documentation, run:
+
+```bash
+mkdocs build
+```
+
+To serve the documentation locally, run:
+
+```bash
+mkdocs serve
+```
+
 ## Commit Hooks
 
 We use [pre-commit](https://pre-commit.com/) to manage a series of git
