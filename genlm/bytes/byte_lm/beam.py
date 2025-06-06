@@ -68,7 +68,7 @@ class ByteBeamState(StatefulByteLM):
         state = LazyTrieState.initial(
             llm,
             AsyncTokenByteTrie.from_vocab(
-                get_byte_vocab(llm.tokenizer, **(trie_opts or {}))
+                get_byte_vocab(llm.tokenizer), **(trie_opts or {})
             ),
         )
         return cls([await state.materialize()], params)
