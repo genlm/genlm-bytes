@@ -12,7 +12,13 @@ class TokenByteTrie:
     """A trie data structure for efficient token-to-byte mapping."""
 
     def __init__(
-        self, decode, device=None, atomic_tokens=None, eot_token=None, eos_tokens=None, max_batch_size=64
+        self,
+        decode,
+        device=None,
+        atomic_tokens=None,
+        eot_token=None,
+        eos_tokens=None,
+        max_batch_size=64,
     ):
         """Initialize a `TokenByteTrie`.
 
@@ -33,7 +39,9 @@ class TokenByteTrie:
 
         self.eot_token = eot_token
         self.eos_tokens = set(eos_tokens or [])
-        self.eos_token_ids = [i for i, token in enumerate(decode) if token in self.eos_tokens]
+        self.eos_token_ids = [
+            i for i, token in enumerate(decode) if token in self.eos_tokens
+        ]
         self._build_trie(atomic_tokens or [])
         self._renumber()
         self._build_node2prefix()
@@ -316,28 +324,30 @@ class TokenByteTrie:
 
     def weight_sum_with_eos(self, ws, generation_mode=True):
         """Compute weight sums with EOS token aggregation.
-        
+
         Args:
             ws (torch.Tensor): Token weights tensor
             generation_mode (bool): Whether to aggregate EOS tokens
-            
+
         Returns:
             (numpy.ndarray): Weight sums with EOS aggregation
         """
         # Standard mass computation
         masses = self.batch_weight_sum(self._preprocess_ws([ws]))[0]
-        
+
         if generation_mode and self.eos_node is not None and self.eos_token_ids:
             # Aggregate EOS token probabilities into EOS node
             eos_mass = sum(ws[token_id].item() for token_id in self.eos_token_ids)
             # Create new masses array with EOS node included
             new_masses = np.zeros(len(self.children))
             # Convert masses to numpy array explicitly to avoid deprecation warning
-            masses_array = np.array(masses) if not isinstance(masses, np.ndarray) else masses
-            new_masses[:len(masses_array)] = masses_array
+            masses_array = (
+                np.array(masses) if not isinstance(masses, np.ndarray) else masses
+            )
+            new_masses[: len(masses_array)] = masses_array
             new_masses[self.eos_node] = eos_mass
             return new_masses
-        
+
         return masses
 
     def visualize(self, ws=None):

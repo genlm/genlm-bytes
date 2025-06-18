@@ -63,7 +63,11 @@ class LazyByteProbs:
             (str): Pretty string representation of the probability distribution
         """
         return self.materialize().map_keys(
-            lambda x: bytes([x]) if isinstance(x, int) and 0 <= x <= 255 else "EOS" if x == 257 else "EOT"
+            lambda x: bytes([x])
+            if isinstance(x, int) and 0 <= x <= 255
+            else "EOS"
+            if x == 257
+            else "EOT"
         )
 
 

@@ -21,9 +21,9 @@ class BeamParams:
         prune_threshold (float, optional): Probability threshold for pruning candidates.
             Candidates with probability below this are removed. Defaults to 0.0
         verbose (bool, optional): Whether to print the beam state at each step. Defaults to False
-        eos_tokens (set, optional): Set of tokens that should be treated as EOS. When configured, 
+        eos_tokens (set, optional): Set of tokens that should be treated as EOS. When configured,
             EOS tokens will terminate generation when sampled. Defaults to None
-        auto_eos (bool, optional): Whether to automatically detect EOS token from tokenizer. 
+        auto_eos (bool, optional): Whether to automatically detect EOS token from tokenizer.
             When True, adds the tokenizer's EOS token to eos_tokens. Defaults to True
     """
 
@@ -58,9 +58,11 @@ class ByteBeamState(StatefulByteLM):
 
     def __init__(self, states, params, generation_mode=True):
         # Separate active and terminated states
-        self.states = sorted([s for s in states if not getattr(s, 'terminated', False)], 
-                           key=lambda b: -b.weight)
-        self.terminated_states = [s for s in states if getattr(s, 'terminated', False)]
+        self.states = sorted(
+            [s for s in states if not getattr(s, "terminated", False)],
+            key=lambda b: -b.weight,
+        )
+        self.terminated_states = [s for s in states if getattr(s, "terminated", False)]
         self.params = params
         self.generation_mode = generation_mode
 
@@ -80,35 +82,47 @@ class ByteBeamState(StatefulByteLM):
         # Handle automatic EOS detection
         trie_options = trie_opts or {}
         eos_tokens = params.eos_tokens.copy() if params.eos_tokens else set()
-        
+
         # Auto-detect EOS token if enabled (combines with any manual eos_tokens)
         if params.auto_eos:
             try:
                 # Try to get EOS token from tokenizer
-                if hasattr(llm.model, 'tokenizer') and hasattr(llm.model.tokenizer, 'eos_token_id'):
+                if hasattr(llm.model, "tokenizer") and hasattr(
+                    llm.model.tokenizer, "eos_token_id"
+                ):
                     eos_token_id = llm.model.tokenizer.eos_token_id
                     if eos_token_id is not None:
                         # Decode the EOS token to bytes
-                        eos_token_bytes = llm.model.tokenizer.decode([eos_token_id]).encode('utf-8')
+                        eos_token_bytes = llm.model.tokenizer.decode(
+                            [eos_token_id]
+                        ).encode("utf-8")
                         eos_tokens.add(eos_token_bytes)
                         if params.verbose:
-                            print(f"Auto-detected EOS token: {eos_token_bytes} (token_id: {eos_token_id})")
-                elif hasattr(llm, 'tokenizer') and hasattr(llm.tokenizer, 'eos_token_id'):
+                            print(
+                                f"Auto-detected EOS token: {eos_token_bytes} (token_id: {eos_token_id})"
+                            )
+                elif hasattr(llm, "tokenizer") and hasattr(
+                    llm.tokenizer, "eos_token_id"
+                ):
                     # Alternative path if tokenizer is directly on llm
                     eos_token_id = llm.tokenizer.eos_token_id
                     if eos_token_id is not None:
-                        eos_token_bytes = llm.tokenizer.decode([eos_token_id]).encode('utf-8')
+                        eos_token_bytes = llm.tokenizer.decode([eos_token_id]).encode(
+                            "utf-8"
+                        )
                         eos_tokens.add(eos_token_bytes)
                         if params.verbose:
-                            print(f"Auto-detected EOS token: {eos_token_bytes} (token_id: {eos_token_id})")
+                            print(
+                                f"Auto-detected EOS token: {eos_token_bytes} (token_id: {eos_token_id})"
+                            )
             except Exception as e:
                 if params.verbose:
                     print(f"Auto-EOS detection failed: {e}")
-        
+
         # Pass EOS tokens to trie if any are configured
         if eos_tokens:
-            trie_options['eos_tokens'] = eos_tokens
-        
+            trie_options["eos_tokens"] = eos_tokens
+
         state = LazyTrieState.initial(
             llm,
             AsyncTokenByteTrie.from_vocab(
@@ -146,15 +160,17 @@ class ByteBeamState(StatefulByteLM):
             for state in self.states:
                 if new_state := state << a:
                     terminated_states.append(new_state)
-            
+
             # Return beam with only terminated states
-            new_beam = ByteBeamState(terminated_states, self.params, self.generation_mode)
+            new_beam = ByteBeamState(
+                terminated_states, self.params, self.generation_mode
+            )
             if self.params.verbose:
                 print()
                 print("EOS encountered - terminating beam")
                 print(new_beam)
             return new_beam
-        
+
         # Standard processing
         new_states = []
         for state in self:
@@ -190,7 +206,9 @@ class ByteBeamState(StatefulByteLM):
             logqs.append(state.logp_next.ps + state.weight)
 
         logqs = np.stack(logqs, axis=0)  # shape: (num_states, 258)
-        logqs[: len(self), 256] = -np.inf  # mask EOT positions of non-extended (EOT is at index 256)
+        logqs[
+            : len(self), 256
+        ] = -np.inf  # mask EOT positions of non-extended (EOT is at index 256)
         logps = scipy_logsumexp(logqs, axis=0)
 
         return LazyByteProbs(logps - logsumexp(logps))
@@ -243,37 +261,37 @@ class ByteBeamState(StatefulByteLM):
 
     async def prefill(self, bs):
         """Prefill with context, handling EOS tokens appropriately.
-        
+
         During prefill (conditioning), EOS tokens are treated as normal tokens
         and don't cause termination.
-        
+
         Args:
             bs (bytes): Byte sequence to prefill with
-            
+
         Returns:
             (ByteBeamState): New beam state after prefilling
         """
         # Switch to conditioning mode temporarily
         old_mode = self.generation_mode
         self.generation_mode = False
-        
+
         # Update all states to conditioning mode
         for state in self.states:
             state.generation_mode = False
-        
+
         try:
             # Standard prefill process
             state = self
             for b in bs:
                 state = await (state.prune() << b)
-            
+
             # Switch back to generation mode
             state.generation_mode = True
             for s in state.states:
                 s.generation_mode = True
-            
+
             return state
-        
+
         except Exception:
             # if doesn't work, restore mode and raise
             self.generation_mode = old_mode

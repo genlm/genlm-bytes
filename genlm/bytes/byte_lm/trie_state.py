@@ -90,23 +90,28 @@ class LazyTrieState:
             (LazyTrieState|None): New state after consuming byte, or None if transition invalid
         """
         if b == 257:  # EOS byte
-            if self.generation_mode and getattr(self.trie.trie, 'eos_node', None) is not None:
+            if (
+                self.generation_mode
+                and getattr(self.trie.trie, "eos_node", None) is not None
+            ):
                 # Create terminated state
                 mass = self.mass
                 new_state = LazyTrieState(
                     lm_state=self.lm_state,
                     trie=self.trie,
                     node=self.node,  # Stay at current node
-                    weight=self.weight + mass[self.trie.trie.eos_node] - mass[self.node],
+                    weight=self.weight
+                    + mass[self.trie.trie.eos_node]
+                    - mass[self.node],
                     mass=mass,
-                    generation_mode=self.generation_mode
+                    generation_mode=self.generation_mode,
                 )
                 new_state.terminated = True
                 return new_state
             else:
                 # During conditioning or when EOS is disabled, EOS is not available
                 return None
-        
+
         # normal byte transition
         if node := self.children[self.node].get(b):
             mass = self.mass
@@ -147,23 +152,28 @@ class LazyTrieState:
         """
         if self.terminated:
             # Terminated states have no next transitions
-            return LazyByteProbs(np.full(258, -np.inf), generation_mode=self.generation_mode)
-        
+            return LazyByteProbs(
+                np.full(258, -np.inf), generation_mode=self.generation_mode
+            )
+
         logps = np.full(258, -np.inf)  # 258 for bytes + EOT + EOS
         mass = self.mass
         logZ = mass[self.node]
-        
+
         # Regular transitions
         for byte, node in self.actions().items():
             if byte is None:  # EOT
                 logps[256] = mass[node] - logZ
             elif isinstance(byte, int) and 0 <= byte <= 255:
                 logps[byte] = mass[node] - logZ
-        
+
         # EOS transition (only during generation)
-        if self.generation_mode and getattr(self.trie.trie, 'eos_node', None) is not None:
+        if (
+            self.generation_mode
+            and getattr(self.trie.trie, "eos_node", None) is not None
+        ):
             logps[257] = mass[self.trie.trie.eos_node] - logZ
-        
+
         return LazyByteProbs(logps, generation_mode=self.generation_mode)
 
     async def materialize(self):
@@ -177,10 +187,9 @@ class LazyTrieState:
         if self._mass is None:
             logp_next = await self.lm_state.logp_next()
             # Use EOS-aware weight sum if available
-            if hasattr(self.trie.trie, 'weight_sum_with_eos'):
+            if hasattr(self.trie.trie, "weight_sum_with_eos"):
                 log_mass = self.trie.trie.weight_sum_with_eos(
-                    torch.exp(logp_next), 
-                    generation_mode=self.generation_mode
+                    torch.exp(logp_next), generation_mode=self.generation_mode
                 )
                 mass = torch.log(torch.tensor(log_mass, dtype=torch.float32))
             else:
