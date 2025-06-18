@@ -90,7 +90,7 @@ class LazyTrieState:
             (LazyTrieState|None): New state after consuming byte, or None if transition invalid
         """
         if b == 257:  # EOS byte
-            if self.generation_mode and hasattr(self.trie.trie, 'eos_node'):
+            if self.generation_mode and getattr(self.trie.trie, 'eos_node', None) is not None:
                 # Create terminated state
                 mass = self.mass
                 new_state = LazyTrieState(
@@ -104,10 +104,10 @@ class LazyTrieState:
                 new_state.terminated = True
                 return new_state
             else:
-                # During conditioning, EOS is not available
+                # During conditioning or when EOS is disabled, EOS is not available
                 return None
         
-        # Standard byte transition
+        # normal byte transition
         if node := self.children[self.node].get(b):
             mass = self.mass
             return LazyTrieState(
@@ -161,7 +161,7 @@ class LazyTrieState:
                 logps[byte] = mass[node] - logZ
         
         # EOS transition (only during generation)
-        if self.generation_mode and hasattr(self.trie.trie, 'eos_node'):
+        if self.generation_mode and getattr(self.trie.trie, 'eos_node', None) is not None:
             logps[257] = mass[self.trie.trie.eos_node] - logZ
         
         return LazyByteProbs(logps, generation_mode=self.generation_mode)

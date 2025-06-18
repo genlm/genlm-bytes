@@ -21,15 +21,17 @@ class BeamParams:
         prune_threshold (float, optional): Probability threshold for pruning candidates.
             Candidates with probability below this are removed. Defaults to 0.0
         verbose (bool, optional): Whether to print the beam state at each step. Defaults to False
-        eos_tokens (set, optional): Set of tokens that should be treated as EOS. Defaults to None
-        terminate_on_eos (bool, optional): Whether to terminate generation on EOS. Defaults to True
+        eos_tokens (set, optional): Set of tokens that should be treated as EOS. When configured, 
+            EOS tokens will terminate generation when sampled. Defaults to None
+        auto_eos (bool, optional): Whether to automatically detect EOS token from tokenizer. 
+            When True, adds the tokenizer's EOS token to eos_tokens. Defaults to True
     """
 
     K: int
     prune_threshold: float = 0.0
     verbose: bool = False
     eos_tokens: set = None
-    terminate_on_eos: bool = True
+    auto_eos: bool = True
 
     def __post_init__(self):
         if self.prune_threshold < 0:
@@ -75,10 +77,37 @@ class ByteBeamState(StatefulByteLM):
         Returns:
             (ByteBeamState): Initial beam state.
         """
-        # Pass EOS tokens to trie if specified
+        # Handle automatic EOS detection
         trie_options = trie_opts or {}
-        if params.eos_tokens:
-            trie_options['eos_tokens'] = params.eos_tokens
+        eos_tokens = params.eos_tokens.copy() if params.eos_tokens else set()
+        
+        # Auto-detect EOS token if enabled (combines with any manual eos_tokens)
+        if params.auto_eos:
+            try:
+                # Try to get EOS token from tokenizer
+                if hasattr(llm.model, 'tokenizer') and hasattr(llm.model.tokenizer, 'eos_token_id'):
+                    eos_token_id = llm.model.tokenizer.eos_token_id
+                    if eos_token_id is not None:
+                        # Decode the EOS token to bytes
+                        eos_token_bytes = llm.model.tokenizer.decode([eos_token_id]).encode('utf-8')
+                        eos_tokens.add(eos_token_bytes)
+                        if params.verbose:
+                            print(f"Auto-detected EOS token: {eos_token_bytes} (token_id: {eos_token_id})")
+                elif hasattr(llm, 'tokenizer') and hasattr(llm.tokenizer, 'eos_token_id'):
+                    # Alternative path if tokenizer is directly on llm
+                    eos_token_id = llm.tokenizer.eos_token_id
+                    if eos_token_id is not None:
+                        eos_token_bytes = llm.tokenizer.decode([eos_token_id]).encode('utf-8')
+                        eos_tokens.add(eos_token_bytes)
+                        if params.verbose:
+                            print(f"Auto-detected EOS token: {eos_token_bytes} (token_id: {eos_token_id})")
+            except Exception as e:
+                if params.verbose:
+                    print(f"Auto-EOS detection failed: {e}")
+        
+        # Pass EOS tokens to trie if any are configured
+        if eos_tokens:
+            trie_options['eos_tokens'] = eos_tokens
         
         state = LazyTrieState.initial(
             llm,
@@ -111,7 +140,7 @@ class ByteBeamState(StatefulByteLM):
         Returns:
             (ByteBeamState): New beam state after processing the byte.
         """
-        if a == 257 and self.generation_mode and self.params.terminate_on_eos:
+        if a == 257 and self.generation_mode:
             # EOS byte - create terminated beam
             terminated_states = []
             for state in self.states:
@@ -246,7 +275,7 @@ class ByteBeamState(StatefulByteLM):
             return state
         
         except Exception:
-            # Restore mode on error
+            # if doesn't work, restore mode and raise
             self.generation_mode = old_mode
             for state in self.states:
                 state.generation_mode = old_mode

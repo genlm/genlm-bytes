@@ -63,7 +63,7 @@ class TokenByteTrie:
                 raise ValueError(f"Duplicate word in vocabulary: {word}")
             self.lookup[word] = token_id
 
-            # Skip EOS tokens - they won't have paths in the trie
+            # Skip EOS tokens so they won't have paths in the trie
             if word in self.eos_tokens:
                 continue
 
@@ -81,10 +81,13 @@ class TokenByteTrie:
             self.word2leaf[word] = last
             self.token_id_to_leaf.append((token_id, last))
 
-        # Add special EOS node connected directly to root
-        self.eos_node = len(self.children)
-        self.children[self.root][257] = self.eos_node  # EOS byte = 257
-        self.children.append({})  # EOS node (terminal)
+        # Add special EOS node connected directly to root (only if EOS tokens exist)
+        if self.eos_tokens:
+            self.eos_node = len(self.children)
+            self.children[self.root][257] = self.eos_node
+            self.children.append({})  # EOS node (terminal)
+        else:
+            self.eos_node = None
 
         self.leaf2word = dict(zip(self.word2leaf.values(), self.word2leaf.keys()))
         self.jump = [
@@ -324,7 +327,7 @@ class TokenByteTrie:
         # Standard mass computation
         masses = self.batch_weight_sum(self._preprocess_ws([ws]))[0]
         
-        if generation_mode and hasattr(self, 'eos_node') and self.eos_token_ids:
+        if generation_mode and self.eos_node is not None and self.eos_token_ids:
             # Aggregate EOS token probabilities into EOS node
             eos_mass = sum(ws[token_id].item() for token_id in self.eos_token_ids)
             # Create new masses array with EOS node included
