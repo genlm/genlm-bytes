@@ -12,7 +12,7 @@ def llm():
 @pytest.mark.asyncio
 async def test_basics(llm):
     state = await ByteBeamState.initial(
-        llm, BeamParams(K=5), trie_opts={"max_batch_size": 100}
+        llm, BeamParams(K=5, auto_eos=False), trie_opts={"max_batch_size": 100}
     )
 
     try:
@@ -33,6 +33,7 @@ async def test_generate(llm, prune_threshold):
             K=5,
             prune_threshold=prune_threshold,
             verbose=True,
+            auto_eos=False,
         ),
     )
 
@@ -89,6 +90,7 @@ async def test_weights(llm, prune_threshold):
         BeamParams(
             K=5,
             prune_threshold=prune_threshold,
+            auto_eos=False,
         ),
     )
 
@@ -112,4 +114,105 @@ async def test_weights(llm, prune_threshold):
 
 def test_invalid_prune_threshold():
     with pytest.raises(ValueError):
-        BeamParams(K=1, prune_threshold=-0.1)
+        BeamParams(K=1, prune_threshold=-0.1, auto_eos=False)
+
+# EOS-specific tests
+@pytest.mark.asyncio
+async def test_eos_auto_detection(llm):
+    """Test automatic EOS detection from tokenizer."""
+    params = BeamParams(K=3, auto_eos=True)
+    state = await ByteBeamState.initial(llm, params)
+    
+    try:
+        # Check that EOS tokens were detected
+        eos_tokens = getattr(state.states[0].trie.trie, 'eos_tokens', set())
+        assert len(eos_tokens) > 0, "Auto-detection should find EOS tokens"
+        
+        # Check that EOS node exists in trie
+        assert hasattr(state.states[0].trie.trie, 'eos_node')
+        assert state.states[0].trie.trie.eos_node is not None
+        
+    finally:
+        await state.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_eos_manual_configuration(llm):
+    """Test manual EOS token configuration."""
+    manual_eos = {b".", b"!", b"?"}
+    params = BeamParams(K=3, eos_tokens=manual_eos, auto_eos=False)
+    state = await ByteBeamState.initial(llm, params)
+    
+    try:
+        # Check that manual EOS tokens were configured
+        eos_tokens = getattr(state.states[0].trie.trie, 'eos_tokens', set())
+        assert eos_tokens == manual_eos
+        
+        # Check that EOS node exists
+        assert state.states[0].trie.trie.eos_node is not None
+        
+    finally:
+        await state.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_eos_disabled(llm):
+    """Test EOS functionality disabled."""
+    params = BeamParams(K=3, auto_eos=False, eos_tokens=set())
+    state = await ByteBeamState.initial(llm, params)
+    
+    try:
+        # Check that no EOS tokens were configured
+        eos_tokens = getattr(state.states[0].trie.trie, 'eos_tokens', set())
+        assert len(eos_tokens) == 0
+        
+        # Check that EOS node doesn't exist
+        assert state.states[0].trie.trie.eos_node is None
+        
+    finally:
+        await state.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_eos_probability_availability(llm):
+    """Test that EOS is available in generation mode but not conditioning mode."""
+    params = BeamParams(K=3, auto_eos=True)
+    state = await ByteBeamState.initial(llm, params)
+    
+    try:
+        # Condition on some context first (conditioning mode)
+        context = b"Hello world"
+        state = await state.prefill(context)
+        
+        # Now check generation mode - EOS should be available
+        assert state.generation_mode == True
+        logp_next = await state.logp_next()
+        probs = logp_next.materialize()
+        
+        # Check that EOS (byte 257) is available in generation mode
+        assert 257 in probs or probs[257] is not None
+        
+    finally:
+        await state.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_eos_combined_auto_manual(llm):
+    """Test combining auto-detection with manual EOS tokens."""
+    manual_eos = {b".", b"!"}
+    params = BeamParams(K=3, eos_tokens=manual_eos, auto_eos=True)
+    state = await ByteBeamState.initial(llm, params)
+    
+    try:
+        # Check that both auto-detected and manual tokens are present
+        eos_tokens = getattr(state.states[0].trie.trie, 'eos_tokens', set())
+        
+        # Should contain manual tokens
+        assert b"." in eos_tokens
+        assert b"!" in eos_tokens
+        
+        # Should also contain auto-detected tokens (like <|endoftext|>)
+        assert len(eos_tokens) > len(manual_eos), "Should have both manual and auto-detected tokens"
+        
+    finally:
+        await state.cleanup()

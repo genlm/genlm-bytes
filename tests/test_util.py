@@ -7,19 +7,19 @@ from genlm.bytes.util import LazyByteProbs, Chart, format_table, escape
 
 class TestLazyByteProbs:
     def test_init_log_space(self):
-        ps = [0.1] * 256 + [0.2]  # 256 bytes + 1 EOT
+        ps = [0.1] * 256 + [0.2] + [0.3]  # 256 bytes + 1 EOT + 1 EOS
         lazy_probs = LazyByteProbs(ps, log_space=True)
         assert lazy_probs.ps == ps
         assert lazy_probs.log_space is True
 
     def test_init_prob_space(self):
-        ps = [0.1] * 256 + [0.2]  # 256 bytes + 1 EOT
+        ps = [0.1] * 256 + [0.2] + [0.3]  # 256 bytes + 1 EOT + 1 EOS
         lazy_probs = LazyByteProbs(ps, log_space=False)
         assert lazy_probs.ps == ps
         assert lazy_probs.log_space is False
 
     def test_init_default_log_space(self):
-        ps = [0.1] * 256 + [0.2]  # 256 bytes + 1 EOT
+        ps = [0.1] * 256 + [0.2] + [0.3]  # 256 bytes + 1 EOT + 1 EOS
         lazy_probs = LazyByteProbs(ps)
         assert lazy_probs.log_space is True
 
@@ -29,19 +29,19 @@ class TestLazyByteProbs:
             LazyByteProbs(ps)
 
     def test_getitem_byte(self):
-        ps = list(range(257))
+        ps = list(range(258))
         lazy_probs = LazyByteProbs(ps)
         assert lazy_probs[0] == 0
         assert lazy_probs[100] == 100
         assert lazy_probs[255] == 255
 
     def test_getitem_eot(self):
-        ps = list(range(257))
+        ps = list(range(258))
         lazy_probs = LazyByteProbs(ps)
         assert lazy_probs[None] == 256
 
     def test_materialize_log_space(self):
-        ps = [-1.0] * 256 + [-2.0]
+        ps = [-1.0] * 256 + [-2.0] + [-3.0]
         lazy_probs = LazyByteProbs(ps, log_space=True)
         chart = lazy_probs.materialize()
 
@@ -52,7 +52,7 @@ class TestLazyByteProbs:
         assert chart[None] == -2.0
 
     def test_materialize_prob_space(self):
-        ps = [0.1] * 256 + [0.2]
+        ps = [0.1] * 256 + [0.2] + [0.3]
         lazy_probs = LazyByteProbs(ps, log_space=False)
         chart = lazy_probs.materialize()
 
@@ -63,7 +63,7 @@ class TestLazyByteProbs:
         assert chart[None] == 0.2
 
     def test_pretty(self):
-        ps = [0.1] * 256 + [0.2]
+        ps = [0.1] * 256 + [0.2] + [0.3]
         lazy_probs = LazyByteProbs(ps, log_space=False)
         pretty_chart = lazy_probs.pretty()
 
@@ -72,6 +72,8 @@ class TestLazyByteProbs:
         for key in pretty_chart.keys():
             if key == "EOT":
                 assert pretty_chart[key] == 0.2
+            elif key == "EOS":
+                assert pretty_chart[key] == 0.3
             else:
                 assert isinstance(key, bytes)
                 assert len(key) == 1

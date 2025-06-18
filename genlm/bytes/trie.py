@@ -332,7 +332,9 @@ class TokenByteTrie:
             eos_mass = sum(ws[token_id].item() for token_id in self.eos_token_ids)
             # Create new masses array with EOS node included
             new_masses = np.zeros(len(self.children))
-            new_masses[:len(masses)] = masses
+            # Convert masses to numpy array explicitly to avoid deprecation warning
+            masses_array = np.array(masses) if not isinstance(masses, np.ndarray) else masses
+            new_masses[:len(masses_array)] = masses_array
             new_masses[self.eos_node] = eos_mass
             return new_masses
         

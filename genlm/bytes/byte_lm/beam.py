@@ -189,8 +189,8 @@ class ByteBeamState(StatefulByteLM):
         for state in await self.extend(self.logZ):
             logqs.append(state.logp_next.ps + state.weight)
 
-        logqs = np.stack(logqs, axis=0)  # shape: (num_states, 257)
-        logqs[: len(self), -1] = -np.inf  # mask EOT positions of non-extended
+        logqs = np.stack(logqs, axis=0)  # shape: (num_states, 258)
+        logqs[: len(self), 256] = -np.inf  # mask EOT positions of non-extended (EOT is at index 256)
         logps = scipy_logsumexp(logqs, axis=0)
 
         return LazyByteProbs(logps - logsumexp(logps))
