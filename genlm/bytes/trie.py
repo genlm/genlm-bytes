@@ -12,7 +12,7 @@ class TokenByteTrie:
     """A trie data structure for efficient token-to-byte mapping."""
 
     def __init__(
-        self, decode, device=None, atomic_tokens=None, eot_token=None, max_batch_size=64
+        self, decode, device=None, atomic_tokens=None, eot_token=None, eos_tokens=None, max_batch_size=64
     ):
         """Initialize a `TokenByteTrie`.
 
@@ -21,6 +21,7 @@ class TokenByteTrie:
             device (str, optional): Device to use for weight sum and max computations ('cpu' or 'cuda').
             atomic_tokens (list[bytes], optional): List of tokens that should be treated as atomic units rather than being split into bytes.
             eot_token (bytes|None, optional): End-of-token token. Default is None, which represents EOT as None.
+            eos_tokens (set[bytes], optional): Set of tokens that should be treated as EOS (End of Sequence).
             max_batch_size (int, optional): Maximum batch size for weight sum sparse matrix multiplication.
         """
         self.decode = decode
@@ -31,6 +32,8 @@ class TokenByteTrie:
             raise ValueError(f"Invalid device: {device}. Must be 'cpu', 'cuda' or None")
 
         self.eot_token = eot_token
+        self.eos_tokens = set(eos_tokens or [])
+        self.eos_token_ids = [i for i, token in enumerate(decode) if token in self.eos_tokens]
         self._build_trie(atomic_tokens or [])
         self._renumber()
         self._build_node2prefix()
@@ -60,6 +63,10 @@ class TokenByteTrie:
                 raise ValueError(f"Duplicate word in vocabulary: {word}")
             self.lookup[word] = token_id
 
+            # Skip EOS tokens - they won't have paths in the trie
+            if word in self.eos_tokens:
+                continue
+
             curr = self.root
             letters = [word] if word in atomic_tokens else word
             for letter in letters:
@@ -73,6 +80,11 @@ class TokenByteTrie:
             assert word not in self.word2leaf
             self.word2leaf[word] = last
             self.token_id_to_leaf.append((token_id, last))
+
+        # Add special EOS node connected directly to root
+        self.eos_node = len(self.children)
+        self.children[self.root][257] = self.eos_node  # EOS byte = 257
+        self.children.append({})  # EOS node (terminal)
 
         self.leaf2word = dict(zip(self.word2leaf.values(), self.word2leaf.keys()))
         self.jump = [
@@ -299,6 +311,30 @@ class TokenByteTrie:
 
         return result
 
+    def weight_sum_with_eos(self, ws, generation_mode=True):
+        """Compute weight sums with EOS token aggregation.
+        
+        Args:
+            ws (torch.Tensor): Token weights tensor
+            generation_mode (bool): Whether to aggregate EOS tokens
+            
+        Returns:
+            (numpy.ndarray): Weight sums with EOS aggregation
+        """
+        # Standard mass computation
+        masses = self.batch_weight_sum(self._preprocess_ws([ws]))[0]
+        
+        if generation_mode and hasattr(self, 'eos_node') and self.eos_token_ids:
+            # Aggregate EOS token probabilities into EOS node
+            eos_mass = sum(ws[token_id].item() for token_id in self.eos_token_ids)
+            # Create new masses array with EOS node included
+            new_masses = np.zeros(len(self.children))
+            new_masses[:len(masses)] = masses
+            new_masses[self.eos_node] = eos_mass
+            return new_masses
+        
+        return masses
+
     def visualize(self, ws=None):
         """Visualize the trie structure using Graphviz.
 
@@ -420,7 +456,8 @@ class AsyncTokenByteTrie:
 
         Args:
             vocab (list): The vocabulary over which the trie will be defined.
-            **kwargs (dict): Additional arguments passed to the trie constructor
+            **kwargs (dict): Additional arguments passed to the trie constructor.
+                             Can include 'eos_tokens' for EOS support.
 
         Returns:
             (AsyncTokenByteTrie): The initialized asynchronous trie instance.

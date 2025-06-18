@@ -9,41 +9,51 @@ from arsenal import colors
 class LazyByteProbs:
     """Represents a lazy (log) probability distribution over bytes.
 
-    Handles probability distributions over 256 possible bytes plus an EOT (End of Token) symbol.
+    Handles probability distributions over 256 possible bytes plus an EOT (End of Token) symbol and an EOS (End of Sequence) symbol.
 
     Args:
-        ps (list): List of 257 probabilities (256 bytes + 1 EOT)
+        ps (list): List of 258 probabilities (256 bytes + 1 EOT + 1 EOS)
         log_space (bool, optional): Whether probabilities are in log space. Defaults to True
+        generation_mode (bool, optional): Whether EOS is available for generation. Defaults to True
     """
 
-    def __init__(self, ps, log_space=True):
-        assert len(ps) == 257  # 256 bytes + 1 EOT
+    def __init__(self, ps, log_space=True, generation_mode=True):
+        assert len(ps) == 258  # 256 bytes + 1 EOT + 1 EOS
         self.ps = ps
         self.log_space = log_space
+        self.generation_mode = generation_mode
 
     def __getitem__(self, b):
-        """Get probability for a byte or EOT.
+        """Get probability for a byte, EOT, or EOS.
 
         Args:
-            b (int|None): Byte value or None for EOT
+            b (int|None): Byte value, None for EOT, or 257 for EOS
 
         Returns:
-            (float): Probability (or log probability) for the byte/EOT
+            (float): Probability (or log probability) for the byte/EOT/EOS
         """
-        if b is None:
-            return self.ps[-1]
-        return self.ps[b]
+        if b is None:  # EOT
+            return self.ps[256]
+        elif b == 257:  # EOS: only available during generation
+            return self.ps[257] if self.generation_mode else -np.inf
+        else:  # Regular byte
+            return self.ps[b]
 
     def materialize(self):
         """Materializes the probability distribution into a Chart.
 
         Returns:
-            (Chart): Chart with probabilities for each byte/EOT
+            (Chart): Chart with probabilities for each byte/EOT/EOS
         """
         Q = Chart(-np.inf if self.log_space else 0)
-        for b, p in enumerate(self.ps[:-1]):
+        # Regular bytes (0-255)
+        for b, p in enumerate(self.ps[:256]):
             Q[b] = p
-        Q[None] = self.ps[-1]
+        # EOT (256)
+        Q[None] = self.ps[256]
+        # EOS (257) - only available during generation
+        if self.generation_mode:
+            Q[257] = self.ps[257]
         return Q
 
     def pretty(self):
@@ -53,7 +63,7 @@ class LazyByteProbs:
             (str): Pretty string representation of the probability distribution
         """
         return self.materialize().map_keys(
-            lambda x: bytes([x]) if x is not None else "EOT"
+            lambda x: bytes([x]) if isinstance(x, int) and 0 <= x <= 255 else "EOS" if x == 257 else "EOT"
         )
 
 
