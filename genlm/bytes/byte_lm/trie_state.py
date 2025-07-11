@@ -5,6 +5,9 @@ from arsenal import colors
 from .lm_state import StatefulTokenizedLM
 from ..util import escape, LazyByteProbs
 
+# EOS byte constant - using 257 as the virtual EOS byte
+EOS = 257
+
 
 class LazyTrieState:
     """A lazy-evaluated state of a TokenByteTrie traversal.
@@ -29,7 +32,6 @@ class LazyTrieState:
         self._mass = mass
         self._extend = None
         self.generation_mode = generation_mode
-        self.terminated = False
         self.root = self.trie.trie.root
         self.children = self.trie.trie.children
 
@@ -89,30 +91,11 @@ class LazyTrieState:
         Returns:
             (LazyTrieState|None): New state after consuming byte, or None if transition invalid
         """
-        if b == 257:  # EOS byte
-            if (
-                self.generation_mode
-                and getattr(self.trie.trie, "eos_node", None) is not None
-            ):
-                # Create terminated state
-                mass = self.mass
-                new_state = LazyTrieState(
-                    lm_state=self.lm_state,
-                    trie=self.trie,
-                    node=self.node,  # Stay at current node
-                    weight=self.weight
-                    + mass[self.trie.trie.eos_node]
-                    - mass[self.node],
-                    mass=mass,
-                    generation_mode=self.generation_mode,
-                )
-                new_state.terminated = True
-                return new_state
-            else:
-                # During conditioning or when EOS is disabled, EOS is not available
-                return None
+        # Handle EOS termination (byte 257) - just return None to end this path
+        if b == EOS and self.generation_mode:
+            return None
 
-        # normal byte transition
+        # Handle normal byte transitions
         if node := self.children[self.node].get(b):
             mass = self.mass
             return LazyTrieState(
@@ -150,31 +133,24 @@ class LazyTrieState:
         Returns:
             (LazyByteProbs): Lazy log probability distribution over possible next bytes
         """
-        if self.terminated:
-            # Terminated states have no next transitions
-            return LazyByteProbs(
-                np.full(258, -np.inf), generation_mode=self.generation_mode
-            )
-
-        logps = np.full(258, -np.inf)  # 258 for bytes + EOT + EOS
+        logps = np.full(258, -np.inf)  # 258 for EOT, EOS + 256 for normal bytes
         mass = self.mass
         logZ = mass[self.node]
 
-        # Regular transitions
+        # Add normal byte transitions
         for byte, node in self.actions().items():
-            if byte is None:  # EOT
-                logps[256] = mass[node] - logZ
-            elif isinstance(byte, int) and 0 <= byte <= 255:
-                logps[byte] = mass[node] - logZ
+            logps[byte if byte is not None else 256] = mass[node] - logZ
 
-        # EOS transition (only during generation)
+        # Add EOS probability if in generation mode and EOS node exists
+        # EOS is only available from root (where the EOS node is connected)
         if (
             self.generation_mode
-            and getattr(self.trie.trie, "eos_node", None) is not None
+            and hasattr(self.trie.trie, "eos_node")
+            and self.node == self.root
         ):
-            logps[257] = mass[self.trie.trie.eos_node] - logZ
+            logps[EOS] = mass[self.trie.trie.eos_node] - logZ
 
-        return LazyByteProbs(logps, generation_mode=self.generation_mode)
+        return LazyByteProbs(logps)
 
     async def materialize(self):
         """Materializes the masses for each node in the trie for the current state.
@@ -186,15 +162,13 @@ class LazyTrieState:
         """
         if self._mass is None:
             logp_next = await self.lm_state.logp_next()
-            # Use EOS-aware weight sum if available
-            if hasattr(self.trie.trie, "weight_sum_with_eos"):
-                log_mass = self.trie.trie.weight_sum_with_eos(
-                    torch.exp(logp_next), generation_mode=self.generation_mode
-                )
-                mass = torch.log(torch.tensor(log_mass, dtype=torch.float32))
-            else:
-                log_mass = await self.trie.weight_sum(torch.exp(logp_next))
-                mass = torch.log(log_mass)
+            log_mass = await self.trie.weight_sum_with_eos(
+                torch.exp(logp_next), self.generation_mode
+            )
+            # Convert to torch tensor if it's numpy array
+            if isinstance(log_mass, np.ndarray):
+                log_mass = torch.from_numpy(log_mass)
+            mass = torch.log(log_mass)
             self._mass = mass.cpu().numpy()
         return self
 

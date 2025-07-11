@@ -9,16 +9,16 @@ from arsenal import colors
 class LazyByteProbs:
     """Represents a lazy (log) probability distribution over bytes.
 
-    Handles probability distributions over 256 possible bytes plus an EOT (End of Token) symbol and an EOS (End of Sequence) symbol.
+    Handles probability distributions over 256 possible bytes plus an EOT (End of Token) symbol and a single EOS (End of Sequence) symbol.
 
     Args:
-        ps (list): List of 258 probabilities (256 bytes + 1 EOT + 1 EOS)
+        ps (list): List of probabilities (256 bytes + 1 EOT + 1 EOS = 258 total)
         log_space (bool, optional): Whether probabilities are in log space. Defaults to True
         generation_mode (bool, optional): Whether EOS is available for generation. Defaults to True
     """
 
     def __init__(self, ps, log_space=True, generation_mode=True):
-        assert len(ps) == 258  # 256 bytes + 1 EOT + 1 EOS
+        assert len(ps) == 258  # Fixed size: 256 bytes + 1 EOT + 1 EOS
         self.ps = ps
         self.log_space = log_space
         self.generation_mode = generation_mode
@@ -34,8 +34,10 @@ class LazyByteProbs:
         """
         if b is None:  # EOT
             return self.ps[256]
-        elif b == 257:  # EOS: only available during generation
+        elif b == 257:  # Single EOS token: only available during generation
             return self.ps[257] if self.generation_mode else -np.inf
+        elif b >= 258:  # Invalid EOS byte
+            return -np.inf if self.log_space else 0
         else:  # Regular byte
             return self.ps[b]
 

@@ -276,6 +276,146 @@ def test_visualize(decode):
         trie.visualize(torch.tensor([0.1] * (len(trie.children) + 1)))
 
 
+@pytest.mark.asyncio
+async def test_eos_token_configuration():
+    """Test EOS token configuration in trie."""
+    vocab = [b"hello", b"world", b"<eos>"]
+    eos_tokens = {b"<eos>"}
+
+    # Test trie with EOS tokens
+    trie = TokenByteTrie(decode=vocab, eos_tokens=eos_tokens)
+
+    # EOS token should be in the eos_tokens set
+    assert b"<eos>" in trie.eos_tokens
+    assert len(trie.eos_tokens) == 1
+
+    # EOS token IDs should be populated
+    assert len(trie.eos_token_ids) == 1
+    assert trie.eos_token_ids[0] == 2  # "<eos>" is at index 2
+
+    # EOS node should exist
+    assert hasattr(trie, "eos_node")
+    assert trie.eos_node is not None
+
+    # EOS node should be connected to root
+    assert trie.children[trie.root].get(257) == trie.eos_node
+
+
+@pytest.mark.asyncio
+async def test_eos_dual_matrix_behavior():
+    """Test dual matrix behavior for generation vs conditioning modes."""
+    vocab = [b"hello", b"world", b"<eos>"]
+    eos_tokens = {b"<eos>"}
+
+    trie = TokenByteTrie(decode=vocab, eos_tokens=eos_tokens)
+    weights = torch.tensor([0.3, 0.4, 0.3])  # hello, world, <eos>
+
+    # Test conditioning mode (includes EOS in ancestors)
+    masses_conditioning = trie.weight_sum(weights, generation_mode=False)
+
+    # Test generation mode (excludes EOS from ancestors)
+    masses_generation = trie.weight_sum(weights, generation_mode=True)
+
+    # Both should be valid arrays
+    assert len(masses_conditioning) == len(trie.children)
+    assert len(masses_generation) == len(trie.children)
+
+    # Generation mode should have different behavior than conditioning mode
+    # The root mass should be different between modes
+    root_mass_cond = masses_conditioning[trie.root]
+    root_mass_gen = masses_generation[trie.root]
+
+    # In conditioning mode, root gets all token masses
+    assert np.isclose(root_mass_cond, 1.0, rtol=1e-5)
+    # In generation mode, root gets non-EOS masses (should be 0.7 = 0.3 + 0.4)
+    assert np.isclose(root_mass_gen, 0.7, rtol=1e-5)
+
+    # The masses should be different between modes
+    assert not np.allclose(masses_conditioning, masses_generation)
+
+
+@pytest.mark.asyncio
+async def test_eos_weight_sum_with_eos():
+    """Test weight_sum_with_eos method."""
+    vocab = [b"hello", b"world", b"<eos>"]
+    eos_tokens = {b"<eos>"}
+
+    trie = TokenByteTrie(decode=vocab, eos_tokens=eos_tokens)
+    weights = torch.tensor([0.3, 0.4, 0.3])  # hello, world, <eos>
+
+    # Test generation mode
+    masses_gen = trie.weight_sum_with_eos(weights, generation_mode=True)
+
+    # Should return array with EOS node included
+    assert len(masses_gen) == len(trie.children)
+    assert not np.isnan(masses_gen).any()
+
+    # EOS node should have the EOS token probability
+    eos_mass = masses_gen[trie.eos_node]
+    assert np.isclose(eos_mass, 0.3, rtol=1e-5)  # EOS token weight
+
+    # Test conditioning mode
+    masses_cond = trie.weight_sum_with_eos(weights, generation_mode=False)
+
+    # Should behave like normal weight_sum
+    masses_normal = trie.weight_sum(weights, generation_mode=False)
+    np.testing.assert_allclose(masses_cond, masses_normal, rtol=1e-5)
+
+
+@pytest.mark.asyncio
+async def test_eos_no_eos_tokens():
+    """Test behavior when no EOS tokens are configured."""
+    vocab = [b"hello", b"world", b"test"]
+
+    # No EOS tokens
+    trie = TokenByteTrie(decode=vocab)
+
+    # Should not have EOS-related attributes
+    assert len(trie.eos_tokens) == 0
+    assert len(trie.eos_token_ids) == 0
+
+    # EOS node should not exist when no EOS tokens
+    assert not hasattr(trie, "eos_node") or trie.eos_node is None
+
+    # weight_sum_with_eos should behave like normal weight_sum
+    weights = torch.tensor([0.3, 0.4, 0.3])
+    masses_eos = trie.weight_sum_with_eos(weights, generation_mode=True)
+    masses_normal = trie.weight_sum(weights, generation_mode=False)
+
+    # Should be identical when no EOS tokens
+    np.testing.assert_allclose(
+        masses_eos[: len(masses_normal)], masses_normal, rtol=1e-5
+    )
+
+
+@pytest.mark.asyncio
+async def test_eos_multiple_tokens():
+    """Test with multiple EOS tokens."""
+    vocab = [b"hello", b"world", b"<eos>", b"</s>"]
+    eos_tokens = {b"<eos>", b"</s>"}
+
+    trie = TokenByteTrie(decode=vocab, eos_tokens=eos_tokens)
+
+    # Should have both EOS tokens
+    assert len(trie.eos_tokens) == 2
+    assert b"<eos>" in trie.eos_tokens
+    assert b"</s>" in trie.eos_tokens
+
+    # Should have both EOS token IDs
+    assert len(trie.eos_token_ids) == 2
+    assert 2 in trie.eos_token_ids  # <eos> at index 2
+    assert 3 in trie.eos_token_ids  # </s> at index 3
+
+    # Test weight sum with multiple EOS tokens
+    weights = torch.tensor([0.2, 0.3, 0.2, 0.3])  # hello, world, <eos>, </s>
+    masses = trie.weight_sum_with_eos(weights, generation_mode=True)
+
+    # EOS node should collect both EOS token masses
+    eos_mass = masses[trie.eos_node]
+    expected_eos_mass = 0.2 + 0.3  # <eos> + </s>
+    assert np.isclose(eos_mass, expected_eos_mass, rtol=1e-5)
+
+
 def test_invalid_device():
     with pytest.raises(ValueError):
         TokenByteTrie(decode=["a", "b", "c"], device="invalid")

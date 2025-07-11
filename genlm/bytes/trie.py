@@ -5,6 +5,7 @@ import numpy as np
 from enum import Enum
 from collections import defaultdict
 
+EOS = 257
 logger = logging.getLogger(__name__)
 
 
@@ -42,6 +43,7 @@ class TokenByteTrie:
         self.eos_token_ids = [
             i for i, token in enumerate(decode) if token in self.eos_tokens
         ]
+
         self._build_trie(atomic_tokens or [])
         self._renumber()
         self._build_node2prefix()
@@ -71,10 +73,7 @@ class TokenByteTrie:
                 raise ValueError(f"Duplicate word in vocabulary: {word}")
             self.lookup[word] = token_id
 
-            # Skip EOS tokens so they won't have paths in the trie
-            if word in self.eos_tokens:
-                continue
-
+            # Build ALL tokens in trie (including EOS tokens for conditioning mode)
             curr = self.root
             letters = [word] if word in atomic_tokens else word
             for letter in letters:
@@ -89,13 +88,13 @@ class TokenByteTrie:
             self.word2leaf[word] = last
             self.token_id_to_leaf.append((token_id, last))
 
-        # Add special EOS node connected directly to root (only if EOS tokens exist)
+        # Create single EOS node if we have EOS tokens
         if self.eos_tokens:
             self.eos_node = len(self.children)
-            self.children[self.root][257] = self.eos_node
-            self.children.append({})  # EOS node (terminal)
-        else:
-            self.eos_node = None
+            self.children.append({})  # Create the EOS node
+            self.children[self.root][EOS] = (
+                self.eos_node
+            )  # Connect immediately so it gets renumbered
 
         self.leaf2word = dict(zip(self.word2leaf.values(), self.word2leaf.keys()))
         self.jump = [
@@ -171,6 +170,10 @@ class TokenByteTrie:
         self.ordering = np.array([f(x) for x in self.ordering])
         self.jump = [np.array(sorted(x.values()), dtype=np.int32) for x in new_children]
 
+        # Update EOS node after renumbering
+        if hasattr(self, "eos_node"):
+            self.eos_node = f(self.eos_node)
+
     def _build_node2prefix(self):
         """Builds a mapping from each node to its prefix.
 
@@ -202,7 +205,7 @@ class TokenByteTrie:
         return parent
 
     def _build_reachability_matrix(self):
-        """Constructs a sparse reachability matrix for efficient weight propagation.
+        """Constructs dual sparse reachability matrices for efficient weight propagation.
 
         The matrix M is constructed such that M[i,j] = 1 if node j is either:
         - The leaf node i itself (self-connection)
@@ -210,29 +213,60 @@ class TokenByteTrie:
         """
         leaf_indices = self.token_id_to_leaf[:, 1]
         parent = self._build_parent_map()
+        # Build conditioning matrix (includes all tokens)
+        rows_cond, cols_cond = [], []
+        # Build generation matrix (excludes EOS tokens from ancestor propagation)
+        rows_gen, cols_gen = [], []
 
-        rows, cols = [], []
         for i, node in enumerate(leaf_indices):
-            # self connections
-            rows.append(i)
-            cols.append(node)
+            token_id = self.token_id_to_leaf[i, 0]
+            token = self.decode[token_id]
+            is_eos = token in self.eos_tokens
 
+            # Conditioning matrix: include ALL tokens normally
+            rows_cond.append(i)
+            cols_cond.append(node)
             current = node
-            while current in parent:  # Walk up to root
+            while current in parent:
                 ancestor = parent[current]
-                rows.append(i)
-                cols.append(ancestor)
+                rows_cond.append(i)
+                cols_cond.append(ancestor)
                 current = ancestor
 
-        self.src_indices = torch.tensor(rows, dtype=torch.long, device=self.device)
-        self.dst_indices = torch.tensor(cols, dtype=torch.long, device=self.device)
+            # Generation matrix: exclude EOS tokens from ancestor propagation
+            if not is_eos:
+                # Non-EOS tokens: normal propagation
+                rows_gen.append(i)
+                cols_gen.append(node)
+                current = node
+                while current in parent:
+                    ancestor = parent[current]
+                    rows_gen.append(i)
+                    cols_gen.append(ancestor)
+                    current = ancestor
 
-        indices = torch.tensor([rows, cols], dtype=torch.long, device=self.device)
-        values = torch.ones(len(rows), device=self.device)
-
-        self.M = torch.sparse_coo_tensor(
-            indices, values, (len(leaf_indices), len(self.children))
+        # Build conditioning matrix
+        indices_cond = torch.tensor(
+            [rows_cond, cols_cond], dtype=torch.long, device=self.device
+        )
+        values_cond = torch.ones(len(rows_cond), device=self.device)
+        self.M_conditioning = torch.sparse_coo_tensor(
+            indices_cond, values_cond, (len(leaf_indices), len(self.children))
         ).to_sparse_csr()
+
+        # Build generation matrix
+        indices_gen = torch.tensor(
+            [rows_gen, cols_gen], dtype=torch.long, device=self.device
+        )
+        values_gen = torch.ones(len(rows_gen), device=self.device)
+        self.M_generation = torch.sparse_coo_tensor(
+            indices_gen, values_gen, (len(leaf_indices), len(self.children))
+        ).to_sparse_csr()
+
+        # Keep the old matrix for backward compatibility
+        self.M = self.M_conditioning
+        self.src_indices = torch.tensor(rows_cond, dtype=torch.long, device=self.device)
+        self.dst_indices = torch.tensor(cols_cond, dtype=torch.long, device=self.device)
 
     def _preprocess_ws(self, batch_ws):
         """Preprocess weight sums for batch processing.
@@ -253,22 +287,26 @@ class TokenByteTrie:
             processed_batch_ws.append(ws)
         return torch.stack(processed_batch_ws)
 
-    def weight_sum(self, ws):
+    def weight_sum(self, ws, generation_mode=False):
         """Computes the sum of weights of all leaf nodes (tokens) that are descendants of each node in the trie.
 
         Args:
             ws (torch.Tensor): Token weights, shape (`len(self.decode)`,).
+            generation_mode (bool): Whether to use generation matrix (excludes EOS from ancestors)
 
         Returns:
             (numpy.ndarray): Summed weights for each node in the trie, shape (num_nodes,).
         """
-        return self.batch_weight_sum(self._preprocess_ws([ws]))[0]
+        return self.batch_weight_sum(
+            self._preprocess_ws([ws]), generation_mode=generation_mode
+        )[0]
 
-    def batch_weight_sum(self, ws):
+    def batch_weight_sum(self, ws, generation_mode=False):
         """Batch version of `weight_sum`.
 
         Args:
             ws (torch.Tensor): Batch of token weights, shape (batch_size × `len(self.decode)`).
+            generation_mode (bool): Whether to use generation matrix (excludes EOS from ancestors)
 
         Returns:
             (numpy.ndarray): Summed weights for each node in the trie, shape (batch_size × num_nodes).
@@ -276,11 +314,15 @@ class TokenByteTrie:
         ws = self._preprocess_ws(ws)
         batch_size = ws.shape[0]
         all_masses = []
+
+        # Choose matrix based on mode
+        matrix = self.M_generation if generation_mode else self.M_conditioning
+
         # If you are getting illegal memory access errors here,
         # try reducing the max_batch_size.
         for i in range(0, batch_size, self.max_batch_size):
             batch_ws = ws[i : i + self.max_batch_size]
-            masses = torch.sparse.mm(batch_ws[:, self.token_ids], self.M)
+            masses = torch.sparse.mm(batch_ws[:, self.token_ids], matrix)
             all_masses.append(masses)
         return torch.cat(all_masses, dim=0)
 
@@ -323,32 +365,42 @@ class TokenByteTrie:
         return result
 
     def weight_sum_with_eos(self, ws, generation_mode=True):
-        """Compute weight sums with EOS token aggregation.
+        """Compute weight sums with mode-aware EOS token handling.
 
         Args:
             ws (torch.Tensor): Token weights tensor
-            generation_mode (bool): Whether to aggregate EOS tokens
+            generation_mode (bool): Whether to aggregate EOS tokens to single node
 
         Returns:
-            (numpy.ndarray): Weight sums with EOS aggregation
+            (numpy.ndarray): Weight sums with appropriate EOS handling
         """
-        # Standard mass computation
-        masses = self.batch_weight_sum(self._preprocess_ws([ws]))[0]
+        if not generation_mode or not self.eos_tokens or not self.eos_token_ids:
+            # Conditioning mode OR no EOS tokens: use conditioning matrix
+            return self.batch_weight_sum(
+                self._preprocess_ws([ws]), generation_mode=False
+            )[0]
 
-        if generation_mode and self.eos_node is not None and self.eos_token_ids:
-            # Aggregate EOS token probabilities into EOS node
-            eos_mass = sum(ws[token_id].item() for token_id in self.eos_token_ids)
-            # Create new masses array with EOS node included
-            new_masses = np.zeros(len(self.children))
-            # Convert masses to numpy array explicitly to avoid deprecation warning
-            masses_array = (
-                np.array(masses) if not isinstance(masses, np.ndarray) else masses
-            )
-            new_masses[: len(masses_array)] = masses_array
-            new_masses[self.eos_node] = eos_mass
-            return new_masses
+        # Generation mode: use generation matrix (excludes EOS from ancestors) + add EOS node
+        masses = self.batch_weight_sum(self._preprocess_ws([ws]), generation_mode=True)[
+            0
+        ]
 
-        return masses
+        # Create new masses array with EOS node included
+        new_masses = np.zeros(len(self.children))
+        # Convert masses to numpy array explicitly to avoid deprecation warning
+        masses_array = (
+            np.array(masses) if not isinstance(masses, np.ndarray) else masses
+        )
+        new_masses[: len(masses_array)] = masses_array
+
+        # Sum all EOS token probabilities and assign to single EOS node
+        eos_mass = sum(ws[token_id].item() for token_id in self.eos_token_ids)
+        new_masses[self.eos_node] = eos_mass
+
+        # Add EOS node mass to root to maintain total probability
+        new_masses[self.root] += eos_mass
+
+        return new_masses
 
     def visualize(self, ws=None):
         """Visualize the trie structure using Graphviz.
@@ -511,6 +563,20 @@ class AsyncTokenByteTrie:
             (np.ndarray): The calculated max weights for the given distribution.
         """
         return await self._queue_request(ws, TrieOp.MAX)
+
+    async def weight_sum_with_eos(self, ws, generation_mode=True):
+        """Compute weight sums with mode-aware EOS token handling.
+
+        Args:
+            ws (torch.Tensor): Token weights tensor
+            generation_mode (bool): Whether to aggregate EOS tokens to single node
+
+        Returns:
+            (np.ndarray): Weight sums with appropriate EOS handling
+        """
+        # For now, delegate directly to the underlying trie
+        # TODO: Could potentially batch these requests too in the future
+        return self.trie.weight_sum_with_eos(ws, generation_mode)
 
     def start(self):
         """Start the background processing task if not already running."""

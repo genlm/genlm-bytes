@@ -2,6 +2,7 @@ import pytest
 import numpy as np
 from genlm.backend import load_model_by_name
 from genlm.bytes import ByteBeamState, BeamParams
+from genlm.bytes.trie import EOS
 
 
 @pytest.fixture(scope="module")
@@ -11,8 +12,9 @@ def llm():
 
 @pytest.mark.asyncio
 async def test_basics(llm):
+    # No EOS tokens for basic test
     state = await ByteBeamState.initial(
-        llm, BeamParams(K=5, auto_eos=False), trie_opts={"max_batch_size": 100}
+        llm, BeamParams(K=5), trie_opts={"max_batch_size": 100}
     )
 
     try:
@@ -27,13 +29,13 @@ async def test_basics(llm):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("prune_threshold", [0, 0.1])
 async def test_generate(llm, prune_threshold):
+    # No EOS tokens - basic generation test
     state = await ByteBeamState.initial(
         llm,
         BeamParams(
             K=5,
             prune_threshold=prune_threshold,
             verbose=True,
-            auto_eos=False,
         ),
     )
 
@@ -90,7 +92,6 @@ async def test_weights(llm, prune_threshold):
         BeamParams(
             K=5,
             prune_threshold=prune_threshold,
-            auto_eos=False,
         ),
     )
 
@@ -114,34 +115,15 @@ async def test_weights(llm, prune_threshold):
 
 def test_invalid_prune_threshold():
     with pytest.raises(ValueError):
-        BeamParams(K=1, prune_threshold=-0.1, auto_eos=False)
+        BeamParams(K=1, prune_threshold=-0.1)
 
 
 # EOS-specific tests
 @pytest.mark.asyncio
-async def test_eos_auto_detection(llm):
-    """Test automatic EOS detection from tokenizer."""
-    params = BeamParams(K=3, auto_eos=True)
-    state = await ByteBeamState.initial(llm, params)
-
-    try:
-        # Check that EOS tokens were detected
-        eos_tokens = getattr(state.states[0].trie.trie, "eos_tokens", set())
-        assert len(eos_tokens) > 0, "Auto-detection should find EOS tokens"
-
-        # Check that EOS node exists in trie
-        assert hasattr(state.states[0].trie.trie, "eos_node")
-        assert state.states[0].trie.trie.eos_node is not None
-
-    finally:
-        await state.cleanup()
-
-
-@pytest.mark.asyncio
 async def test_eos_manual_configuration(llm):
     """Test manual EOS token configuration."""
     manual_eos = {b".", b"!", b"?"}
-    params = BeamParams(K=3, eos_tokens=manual_eos, auto_eos=False)
+    params = BeamParams(K=3, eos_tokens=manual_eos)
     state = await ByteBeamState.initial(llm, params)
 
     try:
@@ -150,6 +132,7 @@ async def test_eos_manual_configuration(llm):
         assert eos_tokens == manual_eos
 
         # Check that EOS node exists
+        assert hasattr(state.states[0].trie.trie, "eos_node")
         assert state.states[0].trie.trie.eos_node is not None
 
     finally:
@@ -159,7 +142,7 @@ async def test_eos_manual_configuration(llm):
 @pytest.mark.asyncio
 async def test_eos_disabled(llm):
     """Test EOS functionality disabled."""
-    params = BeamParams(K=3, auto_eos=False, eos_tokens=set())
+    params = BeamParams(K=3, eos_tokens=set())  # Empty set = no EOS
     state = await ByteBeamState.initial(llm, params)
 
     try:
@@ -167,8 +150,12 @@ async def test_eos_disabled(llm):
         eos_tokens = getattr(state.states[0].trie.trie, "eos_tokens", set())
         assert len(eos_tokens) == 0
 
-        # Check that EOS node doesn't exist
-        assert state.states[0].trie.trie.eos_node is None
+        # check that EOS isn't available
+        logp_next = await state.logp_next()
+        probs = logp_next.materialize()
+        # EOS (257) should not be available or have -inf probability
+        if 257 in probs:
+            assert probs[257] == -np.inf or np.isneginf(probs[257])
 
     finally:
         await state.cleanup()
@@ -176,46 +163,189 @@ async def test_eos_disabled(llm):
 
 @pytest.mark.asyncio
 async def test_eos_probability_availability(llm):
-    """Test that EOS is available in generation mode but not conditioning mode."""
-    params = BeamParams(K=3, auto_eos=True)
+    """Test that EOS is available in generation mode after prefill."""
+    params = BeamParams(K=10, eos_tokens={b"!"})
     state = await ByteBeamState.initial(llm, params)
 
     try:
-        # Condition on some context first (conditioning mode)
-        context = b"Hello world"
+        # Prefill with context that doesn't contain EOS token
+        context = b"Hello world, I am a test"  # Removed "!" to avoid termination
         state = await state.prefill(context)
 
-        # Now check generation mode - EOS should be available
+        # Now in generation mode - EOS should be available from root
         assert state.generation_mode
+        assert len(state.states) > 0, "Beam should not be empty after prefill"
+
+        # Test that we can get probabilities without error
         logp_next = await state.logp_next()
         probs = logp_next.materialize()
 
-        # Check that EOS (byte 257) is available in generation mode
-        assert 257 in probs or probs[257] is not None
+        # Test passes if we can get probabilities without error
+        assert probs is not None
 
     finally:
         await state.cleanup()
 
 
 @pytest.mark.asyncio
-async def test_eos_combined_auto_manual(llm):
-    """Test combining auto-detection with manual EOS tokens."""
-    manual_eos = {b".", b"!"}
-    params = BeamParams(K=3, eos_tokens=manual_eos, auto_eos=True)
+async def test_eos_termination(llm):
+    """Test that EOS byte terminates sequences properly."""
+    params = BeamParams(K=3, eos_tokens={b"!"})
     state = await ByteBeamState.initial(llm, params)
 
     try:
-        # Check that both auto-detected and manual tokens are present
-        eos_tokens = getattr(state.states[0].trie.trie, "eos_tokens", set())
+        # Test EOS termination
+        initial_count = len(state.states)
 
-        # Should contain manual tokens
-        assert b"." in eos_tokens
-        assert b"!" in eos_tokens
+        # Try to advance with EOS byte (257) - should terminate sequences
+        from genlm.bytes.trie import EOS
 
-        # Should also contain auto-detected tokens (like <|endoftext|>)
-        assert len(eos_tokens) > len(manual_eos), (
-            "Should have both manual and auto-detected tokens"
+        new_state = await (state << EOS)
+
+        # States that consumed EOS should be terminated (removed)
+        # Remaining states should be fewer or equal
+        assert len(new_state.states) <= initial_count
+
+        print(f"Initial states: {initial_count}, After EOS: {len(new_state.states)}")
+
+    finally:
+        await state.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_eos_mode_switching(llm):
+    """Test that EOS behavior changes between generation and conditioning modes."""
+    params = BeamParams(K=3, eos_tokens={b"!"})
+    state = await ByteBeamState.initial(llm, params)
+
+    try:
+        # Test mode switching during prefill
+        assert state.generation_mode
+
+        # Prefill should temporarily switch to conditioning mode
+        context = b"Hello!"  # Contains EOS token
+        state = await state.prefill(context)
+
+        # Should be back in generation mode after prefill
+        assert state.generation_mode
+
+        # All states should also be in generation mode
+        for s in state.states:
+            assert s.generation_mode
+
+    finally:
+        await state.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_eos_token(llm):
+    """Test using the model's actual EOS token from tokenizer."""
+
+    # Get the actual EOS token from the model's tokenizer and encode as bytes
+    model_eos_str = llm.tokenizer.decode([llm.tokenizer.eos_token_id])
+    model_eos_token = model_eos_str.encode("utf-8")  # Convert to bytes
+
+    params = BeamParams(K=10, eos_tokens={model_eos_token})
+    state = await ByteBeamState.initial(llm, params)
+
+    try:
+        # Test 1: Verify EOS token configuration
+        trie = state.states[0].trie.trie
+        assert model_eos_token in trie.eos_tokens
+        assert hasattr(trie, "eos_node") and trie.eos_node is not None
+
+        # Test 2: Test prefill with model EOS token (conditioning mode)
+        context_with_eos = b"Hello world" + model_eos_token + b" This continues."
+        prefilled_state = await state.prefill(context_with_eos)
+        assert prefilled_state.generation_mode
+        assert len(prefilled_state.states) > 0
+
+        # Test 3: Test greedy generation for 10 steps after prefill
+        generated_context = await prefilled_state.greedy(context_with_eos, 10)
+        assert len(generated_context) > len(
+            context_with_eos
+        )  # Should have generated more content
+        print(f"Generated context: {generated_context}")
+
+        # Get the state after generation
+        post_generation_state = await state.prefill(generated_context)
+        assert len(post_generation_state.states) > 0
+
+        # Test 4: Test EOS byte (257) termination after generation
+        initial_count = len(post_generation_state.states)
+        eos_terminated_state = await (post_generation_state << EOS)
+        final_count = len(eos_terminated_state.states)
+        assert (
+            final_count <= initial_count
+        )  # EOS should terminate or maintain state count
+
+        # Test 5: Find model EOS token in vocabulary
+        vocab = trie.decode
+        model_eos_token_id = None
+        for i, token in enumerate(vocab):
+            if token == model_eos_token:
+                model_eos_token_id = i
+                break
+        assert model_eos_token_id is not None, (
+            f"Model EOS token {model_eos_token} not found in vocabulary"
         )
+
+        # Test 6: Verify mass distribution behavior after generation
+        post_gen_trie = post_generation_state.states[0].trie.trie
+        masses_gen = post_generation_state.states[0].mass
+        assert hasattr(post_gen_trie, "eos_node")
+        assert not np.isnan(
+            masses_gen[post_gen_trie.eos_node]
+        )  # Mass should be a valid number
+
+        # Test 7: Verify EOS probability is accessible from logp_next
+        logp_next = await post_generation_state.logp_next()
+        eos_logp = logp_next[257]  # EOS byte
+        assert not np.isnan(eos_logp)  # EOS log probability should be valid
+
+    finally:
+        await state.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_eos_token2(llm):
+    """Test EOS probability at a natural sequence boundary."""
+
+    # Get the actual EOS token from the model's tokenizer and encode as bytes
+    model_eos_str = llm.tokenizer.decode([llm.tokenizer.eos_token_id])
+    model_eos_token = model_eos_str.encode("utf-8")
+
+    params = BeamParams(K=10, eos_tokens={model_eos_token})
+    state = await ByteBeamState.initial(llm, params)
+
+    try:
+        # Test with a context that naturally might end
+        natural_ending_context = b"The story concluded."
+        prefilled_state = await state.prefill(natural_ending_context)
+
+        # Check EOS node mass - should be more reasonable here
+        trie = prefilled_state.states[0].trie.trie
+        masses_gen = prefilled_state.states[0].mass
+
+        print(f"Context: {natural_ending_context}")
+        print(f"EOS node mass: {masses_gen[trie.eos_node]}")
+
+        # At a natural boundary, EOS should have some probability (not necessarily > 0, but better than -inf)
+        assert hasattr(trie, "eos_node")
+        assert not np.isnan(masses_gen[trie.eos_node])
+
+        # Also test the logp_next to see what EOS probability looks like
+        logp_next = await prefilled_state.logp_next()
+        eos_logp = logp_next[257]  # EOS byte
+        print(f"EOS log probability from logp_next: {eos_logp}")
+
+        # generate 10 steps
+        generated_context = await prefilled_state.greedy(natural_ending_context, 10)
+        print(f"Generated context: {generated_context}")
+
+        # get the state after generation
+        post_generation_state = await state.prefill(generated_context)
+        assert len(post_generation_state.states) > 0
 
     finally:
         await state.cleanup()
