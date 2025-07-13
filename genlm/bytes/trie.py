@@ -389,7 +389,7 @@ class TokenByteTrie:
         new_masses = np.zeros(len(self.children))
         # Convert masses to numpy array explicitly to avoid deprecation warning
         masses_array = (
-            np.array(masses) if not isinstance(masses, np.ndarray) else masses
+            masses.cpu().numpy() if isinstance(masses, torch.Tensor) else masses
         )
         new_masses[: len(masses_array)] = masses_array
 
