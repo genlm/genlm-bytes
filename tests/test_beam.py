@@ -168,19 +168,16 @@ async def test_eos_probability_availability(llm):
     state = await ByteBeamState.initial(llm, params)
 
     try:
-        # Prefill with context that doesn't contain EOS token
-        context = b"Hello world, I am a test"  # Removed "!" to avoid termination
+        context = b"Hello world, I am a test!" 
         state = await state.prefill(context)
 
-        # Now in generation mode - EOS should be available from root
+        # Now in generation mode EOS should be available from root
         assert state.generation_mode
         assert len(state.states) > 0, "Beam should not be empty after prefill"
 
         # Test that we can get probabilities without error
         logp_next = await state.logp_next()
         probs = logp_next.materialize()
-
-        # Test passes if we can get probabilities without error
         assert probs is not None
 
     finally:
