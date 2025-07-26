@@ -358,8 +358,8 @@ async def test_eos_logp_next_probability_sum(llm):
     beam = await ByteBeamState.initial(llm, params)
     
     try:
-        # Ensure we're in generation mode and at root
-        assert beam.generation_mode == True
+        # check we're in generation mode and at root
+        assert beam.generation_mode
         assert len(beam.states) > 0
         first_state = beam.states[0]
         assert first_state.node == first_state.trie.trie.root, f"Beam should start at root {first_state.trie.trie.root}, got {first_state.node}"

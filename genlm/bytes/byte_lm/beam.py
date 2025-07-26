@@ -232,13 +232,10 @@ class ByteBeamState(StatefulByteLM):
         Returns:
             (ByteBeamState): New beam state after prefilling in generation mode
         """
-        # Create conditioning beam for prefill
-        conditioning_beam = self.with_generation_mode(False)
-        
-        # Do prefill operations on conditioning beam
+
+        conditioning_beam = self.with_generation_mode(False)        
         for b in bs:
-            conditioning_beam = await (conditioning_beam.prune() << b)
-        
+            conditioning_beam = await (conditioning_beam.prune() << b)        
         # Return as generation beam (always True after prefill)
         return conditioning_beam.with_generation_mode(True)
 
