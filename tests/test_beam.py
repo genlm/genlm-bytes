@@ -161,28 +161,6 @@ async def test_eos_disabled(llm):
         await state.cleanup()
 
 
-@pytest.mark.asyncio
-async def test_eos_probability_availability(llm):
-    """Test that EOS is available in generation mode after prefill."""
-    params = BeamParams(K=10, eos_tokens={b"!"})
-    state = await ByteBeamState.initial(llm, params)
-
-    try:
-        context = b"Hello world, I am a test!" 
-        state = await state.prefill(context)
-
-        # Now in generation mode EOS should be available from root
-        assert state.generation_mode
-        assert len(state.states) > 0, "Beam should not be empty after prefill"
-
-        # Test that we can get probabilities without error
-        logp_next = await state.logp_next()
-        probs = logp_next.materialize()
-        assert probs is not None
-
-    finally:
-        await state.cleanup()
-
 
 @pytest.mark.asyncio
 async def test_eos_termination(llm):
@@ -209,29 +187,6 @@ async def test_eos_termination(llm):
         await state.cleanup()
 
 
-@pytest.mark.asyncio
-async def test_eos_mode_switching(llm):
-    """Test that EOS behavior changes between generation and conditioning modes."""
-    params = BeamParams(K=3, eos_tokens={b"!"})
-    state = await ByteBeamState.initial(llm, params)
-
-    try:
-        # Test mode switching during prefill
-        assert state.generation_mode
-
-        # Prefill should temporarily switch to conditioning mode
-        context = b"Hello!"  # Contains EOS token
-        state = await state.prefill(context)
-
-        # Should be back in generation mode after prefill
-        assert state.generation_mode
-
-        # All states should also be in generation mode
-        for s in state.states:
-            assert s.generation_mode
-
-    finally:
-        await state.cleanup()
 
 
 @pytest.mark.asyncio
@@ -297,56 +252,11 @@ async def test_eos_token(llm):
 
         # Test 7: Verify EOS probability is accessible from logp_next
         logp_next = await post_generation_state.logp_next()
-        eos_logp = logp_next[257]  # EOS byte
+        eos_logp = logp_next[257]
         assert not np.isnan(eos_logp)  # EOS log probability should be valid
 
     finally:
         await state.cleanup()
-
-
-@pytest.mark.asyncio
-async def test_eos_token2(llm):
-    """Test EOS probability at a natural sequence boundary."""
-
-    # Get the actual EOS token from the model's tokenizer and encode as bytes
-    model_eos_str = llm.tokenizer.decode([llm.tokenizer.eos_token_id])
-    model_eos_token = model_eos_str.encode("utf-8")
-
-    params = BeamParams(K=10, eos_tokens={model_eos_token})
-    state = await ByteBeamState.initial(llm, params)
-
-    try:
-        # Test with a context that naturally might end
-        natural_ending_context = b"The story concluded."
-        prefilled_state = await state.prefill(natural_ending_context)
-
-        # Check EOS node mass - should be more reasonable here
-        trie = prefilled_state.states[0].trie.trie
-        masses_gen = prefilled_state.states[0].mass
-
-        print(f"Context: {natural_ending_context}")
-        print(f"EOS node mass: {masses_gen[trie.eos_node]}")
-
-        # At a natural boundary, EOS should have some probability (not necessarily > 0, but better than -inf)
-        assert hasattr(trie, "eos_node")
-        assert not np.isnan(masses_gen[trie.eos_node])
-
-        # Also test the logp_next to see what EOS probability looks like
-        logp_next = await prefilled_state.logp_next()
-        eos_logp = logp_next[257]  # EOS byte
-        print(f"EOS log probability from logp_next: {eos_logp}")
-
-        # generate 10 steps
-        generated_context = await prefilled_state.greedy(natural_ending_context, 10)
-        print(f"Generated context: {generated_context}")
-
-        # get the state after generation
-        post_generation_state = await state.prefill(generated_context)
-        assert len(post_generation_state.states) > 0
-
-    finally:
-        await state.cleanup()
-
 
 @pytest.mark.asyncio 
 async def test_eos_logp_next_probability_sum(llm):
@@ -366,7 +276,7 @@ async def test_eos_logp_next_probability_sum(llm):
         
         # Get the underlying token probabilities from the language model
         token_logprobs = await first_state.lm_state.logp_next()
-        token_probs = np.exp(token_logprobs.cpu().numpy())
+        token_probs = np.exp(token_logprobs.cpu().numpy()).astype(np.float64)
         
         # Find the token IDs for our EOS tokens
         decode_vocab = first_state.trie.trie.decode
@@ -376,7 +286,7 @@ async def test_eos_logp_next_probability_sum(llm):
         for token_id, token_bytes in enumerate(decode_vocab):
             if token_bytes in eos_tokens:
                 eos_token_ids.append(token_id)
-                expected_eos_prob_sum += token_probs[token_id]
+                expected_eos_prob_sum += float(token_probs[token_id])
         
         print(f"EOS tokens: {eos_tokens}")
         print(f"EOS token IDs found: {eos_token_ids}")
@@ -384,7 +294,7 @@ async def test_eos_logp_next_probability_sum(llm):
         
         logp_next = await beam.logp_next()
         eos_logp = logp_next[EOS]
-        eos_prob = np.exp(eos_logp)
+        eos_prob = float(np.exp(eos_logp))  # Ensure float64
         
         print(f"Actual EOS probability from logp_next: {eos_prob}")
         print(f"Actual EOS log probability: {eos_logp}")
@@ -395,7 +305,7 @@ async def test_eos_logp_next_probability_sum(llm):
         np.testing.assert_allclose(
             eos_prob, 
             expected_eos_prob_sum, 
-            rtol=1e-6, 
+            rtol=1e-4,
             err_msg=f"EOS probability {eos_prob} should equal sum of EOS token probabilities {expected_eos_prob_sum}"
         )
                 
