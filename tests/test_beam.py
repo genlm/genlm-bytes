@@ -349,3 +349,58 @@ async def test_eos_token2(llm):
 
     finally:
         await state.cleanup()
+
+
+@pytest.mark.asyncio 
+async def test_eos_logp_next_probability_sum(llm):
+    """Test that EOS probability in logp_next equals sum of specified EOS token probabilities."""
+    
+    eos_tokens = {b".", b"!", b"?"}
+    params = BeamParams(K=5, eos_tokens=eos_tokens)
+    
+    beam = await ByteBeamState.initial(llm, params)
+    
+    try:
+        # Ensure we're in generation mode and at root
+        assert beam.generation_mode == True
+        assert len(beam.states) > 0
+        first_state = beam.states[0]
+        assert first_state.node == first_state.trie.trie.root, f"Beam should start at root {first_state.trie.trie.root}, got {first_state.node}"
+        
+        # Get the underlying token probabilities from the language model
+        token_logprobs = await first_state.lm_state.logp_next()
+        token_probs = np.exp(token_logprobs.cpu().numpy())
+        
+        # Find the token IDs for our EOS tokens
+        decode_vocab = first_state.trie.trie.decode
+        eos_token_ids = []
+        expected_eos_prob_sum = 0.0
+        
+        for token_id, token_bytes in enumerate(decode_vocab):
+            if token_bytes in eos_tokens:
+                eos_token_ids.append(token_id)
+                expected_eos_prob_sum += token_probs[token_id]
+        
+        print(f"EOS tokens: {eos_tokens}")
+        print(f"EOS token IDs found: {eos_token_ids}")
+        print(f"Expected EOS probability sum: {expected_eos_prob_sum}")
+        
+        logp_next = await beam.logp_next()
+        eos_logp = logp_next[EOS]
+        eos_prob = np.exp(eos_logp)
+        
+        print(f"Actual EOS probability from logp_next: {eos_prob}")
+        print(f"Actual EOS log probability: {eos_logp}")
+        
+        assert not np.isnan(eos_prob), "EOS probability should not be NaN"
+        assert not np.isinf(eos_logp), "EOS log probability should not be -inf"
+        
+        np.testing.assert_allclose(
+            eos_prob, 
+            expected_eos_prob_sum, 
+            rtol=1e-6, 
+            err_msg=f"EOS probability {eos_prob} should equal sum of EOS token probabilities {expected_eos_prob_sum}"
+        )
+                
+    finally:
+        await beam.cleanup()
