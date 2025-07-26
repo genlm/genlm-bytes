@@ -197,45 +197,50 @@ class ByteBeamState(StatefulByteLM):
             desc += f"({color % f'{P:.4f}'}) {repr(state)}\n"
         return desc
 
+    def with_generation_mode(self, generation_mode):
+        """Create a new beam state with specified generation mode.
+        
+        Args:
+            generation_mode (bool): Whether the new beam should be in generation mode
+            
+        Returns:
+            (ByteBeamState): New beam state with updated generation mode
+        """
+        new_states = []
+        for state in self.states:
+            new_state = LazyTrieState(
+                lm_state=state.lm_state,
+                trie=state.trie,
+                node=state.node,
+                weight=state.weight,
+                mass=state._mass,
+                generation_mode=generation_mode
+            )
+            new_states.append(new_state)
+        
+        return ByteBeamState(new_states, self.params, generation_mode)
+
     async def prefill(self, bs):
         """Prefill with context, handling EOS tokens appropriately.
 
         During prefill (conditioning), EOS tokens are treated as normal tokens
-        and don't cause termination.
+        and don't cause termination. After prefill, beam is always in generation mode.
 
         Args:
             bs (bytes): Byte sequence to prefill with
 
         Returns:
-            (ByteBeamState): New beam state after prefilling
+            (ByteBeamState): New beam state after prefilling in generation mode
         """
-        # Switch to conditioning mode temporarily
-        old_mode = self.generation_mode
-        self.generation_mode = False
-
-        # Update all states to conditioning mode
-        for state in self.states:
-            state.generation_mode = False
-
-        try:
-            # Standard prefill process
-            state = self
-            for b in bs:
-                state = await (state.prune() << b)
-
-            # Switch back to generation mode
-            state.generation_mode = True
-            for s in state.states:
-                s.generation_mode = True
-
-            return state
-
-        except Exception:
-            # if doesn't work, restore mode and raise
-            self.generation_mode = old_mode
-            for state in self.states:
-                state.generation_mode = old_mode
-            raise
+        # Create conditioning beam for prefill
+        conditioning_beam = self.with_generation_mode(False)
+        
+        # Do prefill operations on conditioning beam
+        for b in bs:
+            conditioning_beam = await (conditioning_beam.prune() << b)
+        
+        # Return as generation beam (always True after prefill)
+        return conditioning_beam.with_generation_mode(True)
 
     async def cleanup(self):
         """Cleans up resources used by the candidates."""
