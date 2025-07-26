@@ -310,25 +310,21 @@ async def test_eos_dual_matrix_behavior():
     trie = TokenByteTrie(decode=vocab, eos_tokens=eos_tokens)
     weights = torch.tensor([0.3, 0.4, 0.3])  # hello, world, <eos>
 
-    # Test conditioning mode (includes EOS in ancestors)
+    # Test conditioning mode (no EOS node mass)
     masses_conditioning = trie.weight_sum(weights, generation_mode=False)
 
-    # Test generation mode (excludes EOS from ancestors)
+    # Test generation mode (excludes EOS tokens' massfrom ancestors and moves it to the EOS node)
     masses_generation = trie.weight_sum(weights, generation_mode=True)
 
     # Both should be valid arrays
     assert len(masses_conditioning) == len(trie.children)
     assert len(masses_generation) == len(trie.children)
 
-    # Generation mode should have different behavior than conditioning mode
-    # The root mass should be different between modes
     root_mass_cond = masses_conditioning[trie.root]
     root_mass_gen = masses_generation[trie.root]
 
-    # In conditioning mode, root gets all token masses
     assert np.isclose(root_mass_cond, 1.0, rtol=1e-5)
-    # In generation mode, root gets non-EOS masses (should be 0.7 = 0.3 + 0.4)
-    assert np.isclose(root_mass_gen, 0.7, rtol=1e-5)
+    assert np.isclose(root_mass_gen, 1.0, rtol=1e-5)
 
     # The masses should be different between modes
     assert not np.allclose(masses_conditioning, masses_generation)
