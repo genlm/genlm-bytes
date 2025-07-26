@@ -210,6 +210,8 @@ class TokenByteTrie:
         The matrix M is constructed such that M[i,j] = 1 if node j is either:
         - The leaf node i itself (self-connection)
         - An ancestor of leaf node i in the trie
+        
+        For generation mode, EOS tokens contribute directly to eos_node and root.
         """
         leaf_indices = self.token_id_to_leaf[:, 1]
         parent = self._build_parent_map()
@@ -233,8 +235,15 @@ class TokenByteTrie:
                 cols_cond.append(ancestor)
                 current = ancestor
 
-            # Generation matrix: exclude EOS tokens from ancestor propagation
-            if not is_eos:
+            # Generation matrix: handle EOS vs non-EOS tokens differently
+            if is_eos:
+                # EOS tokens: contribute directly to eos_node and root
+                # (eos_node exists because is_eos implies self.eos_tokens is non-empty)
+                rows_gen.append(i)
+                cols_gen.append(self.eos_node)
+                rows_gen.append(i)
+                cols_gen.append(self.root)
+            else:
                 # Non-EOS tokens: normal propagation
                 rows_gen.append(i)
                 cols_gen.append(node)
@@ -367,6 +376,10 @@ class TokenByteTrie:
     def weight_sum_with_eos(self, ws, generation_mode=True):
         """Compute weight sums with mode-aware EOS token handling.
 
+        EOS logic is now baked into the matrices:
+        - M_conditioning: treats EOS tokens like regular tokens
+        - M_generation: EOS tokens contribute directly to eos_node and root
+
         Args:
             ws (torch.Tensor): Token weights tensor
             generation_mode (bool): Whether to aggregate EOS tokens to single node
@@ -374,33 +387,9 @@ class TokenByteTrie:
         Returns:
             (numpy.ndarray): Weight sums with appropriate EOS handling
         """
-        if not generation_mode or not self.eos_tokens or not self.eos_token_ids:
-            # Conditioning mode OR no EOS tokens: use conditioning matrix
-            return self.batch_weight_sum(
-                self._preprocess_ws([ws]), generation_mode=False
-            )[0]
-
-        # Generation mode: use generation matrix (excludes EOS from ancestors) + add EOS node
-        masses = self.batch_weight_sum(self._preprocess_ws([ws]), generation_mode=True)[
-            0
-        ]
-
-        # Create new masses array with EOS node included
-        new_masses = np.zeros(len(self.children))
-        # Convert masses to numpy array explicitly to avoid deprecation warning
-        masses_array = (
-            masses.cpu().numpy() if isinstance(masses, torch.Tensor) else masses
-        )
-        new_masses[: len(masses_array)] = masses_array
-
-        # Sum all EOS token probabilities and assign to single EOS node
-        eos_mass = sum(ws[token_id].item() for token_id in self.eos_token_ids)
-        new_masses[self.eos_node] = eos_mass
-
-        # Add EOS node mass to root to maintain total probability
-        new_masses[self.root] += eos_mass
-
-        return new_masses
+        return self.batch_weight_sum(
+            self._preprocess_ws([ws]), generation_mode=generation_mode
+        )[0]
 
     def visualize(self, ws=None):
         """Visualize the trie structure using Graphviz.
