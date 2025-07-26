@@ -137,7 +137,6 @@ class LazyTrieState:
         mass = self.mass
         logZ = mass[self.node]
 
-        # Add normal byte transitions
         for byte, node in self.actions().items():
             logps[byte if byte is not None else 256] = mass[node] - logZ
 
@@ -165,9 +164,6 @@ class LazyTrieState:
             log_mass = await self.trie.weight_sum_with_eos(
                 torch.exp(logp_next), self.generation_mode
             )
-            # Convert to torch tensor if it's numpy array
-            if isinstance(log_mass, np.ndarray):
-                log_mass = torch.from_numpy(log_mass)
             mass = torch.log(log_mass)
             self._mass = mass.cpu().numpy()
         return self
