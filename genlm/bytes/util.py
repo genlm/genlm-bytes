@@ -34,9 +34,9 @@ class LazyByteProbs:
         """
         if b is None:  # EOT
             return self.ps[256]
-        elif b == 257:  # Single EOS token: only available during generation
+        elif b == 257:  # EOS token: only available during generation
             return self.ps[257] if self.generation_mode else -np.inf
-        elif b >= 258:  # Invalid EOS byte
+        elif b >= 258:  # invalid index
             return -np.inf if self.log_space else 0
         else:  # Regular byte
             return self.ps[b]

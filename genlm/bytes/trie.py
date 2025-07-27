@@ -211,71 +211,70 @@ class TokenByteTrie:
         - The leaf node i itself (self-connection)
         - An ancestor of leaf node i in the trie
         
-        For generation mode, EOS tokens contribute directly to eos_node and root.
+        For propagate_eos mode, EOS tokens contribute directly to eos_node and root.
         """
         leaf_indices = self.token_id_to_leaf[:, 1]
         parent = self._build_parent_map()
-        # Build conditioning matrix (includes all tokens)
-        rows_cond, cols_cond = [], []
-        # Build generation matrix (excludes EOS tokens from ancestor propagation)
-        rows_gen, cols_gen = [], []
+        # Build no_eos matrix (includes all tokens)
+        rows_no_eos, cols_no_eos = [], []
+        # Build propagate_eos matrix (excludes EOS tokens from ancestor propagation)
+        rows_propagate_eos, cols_propagate_eos = [], []
 
         for i, node in enumerate(leaf_indices):
             token_id = self.token_id_to_leaf[i, 0]
             token = self.decode[token_id]
             is_eos = token in self.eos_tokens
 
-            # Conditioning matrix: include ALL tokens normally
-            rows_cond.append(i)
-            cols_cond.append(node)
+            # no_eos matrix: include ALL tokens normally
+            rows_no_eos.append(i)
+            cols_no_eos.append(node)
             current = node
             while current in parent:
                 ancestor = parent[current]
-                rows_cond.append(i)
-                cols_cond.append(ancestor)
+                rows_no_eos.append(i)
+                cols_no_eos.append(ancestor)
                 current = ancestor
 
-            # Generation matrix: handle EOS vs non-EOS tokens differently
+            # propagate_eos matrix: handle EOS vs non-EOS tokens differently
             if is_eos:
                 # EOS tokens: contribute directly to eos_node and root
-                # (eos_node exists because is_eos implies self.eos_tokens is non-empty)
-                rows_gen.append(i)
-                cols_gen.append(self.eos_node)
-                rows_gen.append(i)
-                cols_gen.append(self.root)
+                rows_propagate_eos.append(i)
+                cols_propagate_eos.append(self.eos_node)
+                rows_propagate_eos.append(i)
+                cols_propagate_eos.append(self.root)
             else:
                 # Non-EOS tokens: normal propagation
-                rows_gen.append(i)
-                cols_gen.append(node)
+                rows_propagate_eos.append(i)
+                cols_propagate_eos.append(node)
                 current = node
                 while current in parent:
                     ancestor = parent[current]
-                    rows_gen.append(i)
-                    cols_gen.append(ancestor)
+                    rows_propagate_eos.append(i)
+                    cols_propagate_eos.append(ancestor)
                     current = ancestor
 
-        # Build conditioning matrix
-        indices_cond = torch.tensor(
-            [rows_cond, cols_cond], dtype=torch.long, device=self.device
+        # Build no_eos matrix
+        indices_no_eos = torch.tensor(
+            [rows_no_eos, cols_no_eos], dtype=torch.long, device=self.device
         )
-        values_cond = torch.ones(len(rows_cond), device=self.device)
-        self.M_conditioning = torch.sparse_coo_tensor(
-            indices_cond, values_cond, (len(leaf_indices), len(self.children))
+        values_no_eos = torch.ones(len(rows_no_eos), device=self.device)
+        self.M_no_eos = torch.sparse_coo_tensor(
+            indices_no_eos, values_no_eos, (len(leaf_indices), len(self.children))
         ).to_sparse_csr()
 
-        # Build generation matrix
-        indices_gen = torch.tensor(
-            [rows_gen, cols_gen], dtype=torch.long, device=self.device
+        # Build propagate_eos matrix
+        indices_propagate_eos = torch.tensor(
+            [rows_propagate_eos, cols_propagate_eos], dtype=torch.long, device=self.device
         )
-        values_gen = torch.ones(len(rows_gen), device=self.device)
-        self.M_generation = torch.sparse_coo_tensor(
-            indices_gen, values_gen, (len(leaf_indices), len(self.children))
+        values_propagate_eos = torch.ones(len(rows_propagate_eos), device=self.device)
+        self.M_propagate_eos = torch.sparse_coo_tensor(
+            indices_propagate_eos, values_propagate_eos, (len(leaf_indices), len(self.children))
         ).to_sparse_csr()
 
         # Keep the old matrix for backward compatibility
-        self.M = self.M_conditioning
-        self.src_indices = torch.tensor(rows_cond, dtype=torch.long, device=self.device)
-        self.dst_indices = torch.tensor(cols_cond, dtype=torch.long, device=self.device)
+        self.M = self.M_no_eos
+        self.src_indices = torch.tensor(rows_no_eos, dtype=torch.long, device=self.device)
+        self.dst_indices = torch.tensor(cols_no_eos, dtype=torch.long, device=self.device)
 
     def _preprocess_ws(self, batch_ws):
         """Preprocess weight sums for batch processing.
@@ -296,36 +295,43 @@ class TokenByteTrie:
             processed_batch_ws.append(ws)
         return torch.stack(processed_batch_ws)
 
-    def weight_sum(self, ws, generation_mode=False):
+    def weight_sum(self, ws, mode=None):
         """Computes the sum of weights of all leaf nodes (tokens) that are descendants of each node in the trie.
 
         Args:
             ws (torch.Tensor): Token weights, shape (`len(self.decode)`,).
-            generation_mode (bool): Whether to use generation matrix (excludes EOS from ancestors)
+            mode (TrieMode, optional): Trie mode - determines matrix selection. 
+                                     If None, defaults to NO_EOS.
 
         Returns:
             (numpy.ndarray): Summed weights for each node in the trie, shape (num_nodes,).
         """
-        return self.batch_weight_sum(
-            self._preprocess_ws([ws]), generation_mode=generation_mode
-        )[0]
+        from .byte_lm.trie_state import TrieMode
+        if mode is None:
+            mode = TrieMode.NO_EOS
+        return self.batch_weight_sum(self._preprocess_ws([ws]), mode=mode)[0]
 
-    def batch_weight_sum(self, ws, generation_mode=False):
+    def batch_weight_sum(self, ws, mode=None):
         """Batch version of `weight_sum`.
 
         Args:
             ws (torch.Tensor): Batch of token weights, shape (batch_size × `len(self.decode)`).
-            generation_mode (bool): Whether to use generation matrix (excludes EOS from ancestors)
+            mode (TrieMode, optional): Trie mode - determines matrix selection.
+                                     If None, defaults to NO_EOS.
 
         Returns:
             (numpy.ndarray): Summed weights for each node in the trie, shape (batch_size × num_nodes).
         """
+        from .byte_lm.trie_state import TrieMode
+        if mode is None:
+            mode = TrieMode.NO_EOS
+            
         ws = self._preprocess_ws(ws)
         batch_size = ws.shape[0]
         all_masses = []
 
         # Choose matrix based on mode
-        matrix = self.M_generation if generation_mode else self.M_conditioning
+        matrix = self.M_propagate_eos if mode == TrieMode.PROPAGATE_EOS else self.M_no_eos
 
         # If you are getting illegal memory access errors here,
         # try reducing the max_batch_size.
@@ -373,23 +379,24 @@ class TokenByteTrie:
 
         return result
 
-    def weight_sum_with_eos(self, ws, generation_mode=True):
+    def weight_sum_with_eos(self, ws, mode=None):
         """Compute weight sums with mode-aware EOS token handling.
 
         EOS logic is now baked into the matrices:
-        - M_conditioning: treats EOS tokens like regular tokens
-        - M_generation: EOS tokens contribute directly to eos_node and root
+        - M_no_eos: treats EOS tokens like regular tokens
+        - M_propagate_eos: EOS tokens contribute directly to eos_node and root
 
         Args:
             ws (torch.Tensor): Token weights tensor
-            generation_mode (bool): Whether to aggregate EOS tokens to single node
+            mode (TrieMode): Trie mode determining EOS handling
 
         Returns:
             (numpy.ndarray): Weight sums with appropriate EOS handling
         """
-        return self.batch_weight_sum(
-            self._preprocess_ws([ws]), generation_mode=generation_mode
-        )[0]
+        from .byte_lm.trie_state import TrieMode
+        if mode is None:
+            mode = TrieMode.PROPAGATE_EOS
+        return self.batch_weight_sum(self._preprocess_ws([ws]), mode=mode)[0]
 
     def visualize(self, ws=None):
         """Visualize the trie structure using Graphviz.
@@ -553,19 +560,19 @@ class AsyncTokenByteTrie:
         """
         return await self._queue_request(ws, TrieOp.MAX)
 
-    async def weight_sum_with_eos(self, ws, generation_mode=True):
+    async def weight_sum_with_eos(self, ws, mode=None):
         """Compute weight sums with mode-aware EOS token handling.
 
         Args:
             ws (torch.Tensor): Token weights tensor
-            generation_mode (bool): Whether to aggregate EOS tokens to single node
+            mode (TrieMode, optional): Trie mode determining EOS handling
 
         Returns:
             (np.ndarray): Weight sums with appropriate EOS handling
         """
         # For now, delegate directly to the underlying trie
         # TODO: Could potentially batch these requests too in the future
-        return self.trie.weight_sum_with_eos(ws, generation_mode)
+        return self.trie.weight_sum_with_eos(ws, mode)
 
     def start(self):
         """Start the background processing task if not already running."""

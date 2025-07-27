@@ -3,6 +3,7 @@ import numpy as np
 from genlm.backend import load_model_by_name
 from genlm.bytes import ByteBeamState, BeamParams
 from genlm.bytes.trie import EOS
+from genlm.bytes.byte_lm.trie_state import TrieMode
 
 
 @pytest.fixture(scope="module")
@@ -209,7 +210,7 @@ async def test_eos_token(llm):
         # Test 2: Test prefill with model EOS token (conditioning mode)
         context_with_eos = b"Hello world" + model_eos_token + b" This continues."
         prefilled_state = await state.prefill(context_with_eos)
-        assert prefilled_state.generation_mode
+        assert prefilled_state.mode == TrieMode.PROPAGATE_EOS
         assert len(prefilled_state.states) > 0
 
         # Test 3: Test greedy generation for 10 steps after prefill
@@ -268,8 +269,8 @@ async def test_eos_logp_next_probability_sum(llm):
     beam = await ByteBeamState.initial(llm, params)
     
     try:
-        # check we're in generation mode and at root
-        assert beam.generation_mode
+        # check we're in propagate_eos mode and at root
+        assert beam.mode == TrieMode.PROPAGATE_EOS
         assert len(beam.states) > 0
         first_state = beam.states[0]
         assert first_state.node == first_state.trie.trie.root, f"Beam should start at root {first_state.trie.trie.root}, got {first_state.node}"

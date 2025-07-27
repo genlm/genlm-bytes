@@ -3,6 +3,7 @@ import torch
 import numpy as np
 
 from genlm.bytes.trie import TokenByteTrie, EOS
+from genlm.bytes.byte_lm.trie_state import TrieMode
 
 
 @pytest.fixture(scope="module")
@@ -41,8 +42,8 @@ def test_conditioning_mode_mass_distribution(eos_trie: TokenByteTrie):
     # Probabilities: "!" = 0.4, "!!" = 0.1. Total starting with "!" is 0.5
     weights = torch.tensor([0.1, 0.1, 0.4, 0.1, 0.1, 0.1, 0.1, 0.0])
 
-    # In conditioning mode, EOS tokens are treated normally
-    masses = eos_trie.weight_sum_with_eos(weights, generation_mode=False)
+    # In no_eos mode, EOS tokens are treated normally
+    masses = eos_trie.weight_sum_with_eos(weights, mode=TrieMode.NO_EOS)
 
     # Find the node for the prefix "!"
     node_for_exclamation = eos_trie.children[eos_trie.root][ord("!")]
@@ -51,17 +52,17 @@ def test_conditioning_mode_mass_distribution(eos_trie: TokenByteTrie):
     expected_mass = weights[2] + weights[3]  # P("!") + P("!!")
     assert np.isclose(masses[node_for_exclamation], expected_mass.item())
 
-    # The special EOS node should have zero mass in conditioning mode
+    # The EOS node should have zero mass in no_eos mode
     assert masses[eos_trie.eos_node] == 0.0
 
 
-def test_generation_mode_mass_distribution(eos_trie: TokenByteTrie):
-    """3. Validates that in generation mode, EOS tokens DO NOT contribute to ancestor mass."""
+def test_propagate_eos_mode_mass_distribution(eos_trie: TokenByteTrie):
+    """Validates that in propagate_eos mode, EOS tokens DO NOT contribute to ancestor mass."""
     # Probabilities: "!" = 0.4, "!!" = 0.1.
     weights = torch.tensor([0.1, 0.1, 0.4, 0.1, 0.1, 0.1, 0.1, 0.0])
 
-    # In generation mode, EOS tokens should be excluded from ancestor paths
-    masses = eos_trie.weight_sum_with_eos(weights, generation_mode=True)
+    # In propagate_eos mode, EOS tokens should be excluded from ancestor paths
+    masses = eos_trie.weight_sum_with_eos(weights, mode=TrieMode.PROPAGATE_EOS)
 
     # Find the node for the prefix "!"
     node_for_exclamation = eos_trie.children[eos_trie.root][ord("!")]
@@ -71,13 +72,13 @@ def test_generation_mode_mass_distribution(eos_trie: TokenByteTrie):
     assert np.isclose(masses[node_for_exclamation], expected_mass.item())
 
 
-def test_generation_mode_eos_node_aggregation(eos_trie: TokenByteTrie):
-    """4. Validates that the virtual EOS node correctly aggregates all EOS token probabilities in generation mode."""
+def test_propagate_eos_mode_eos_node_aggregation(eos_trie: TokenByteTrie):
+    """Validates that the virtual EOS node correctly aggregates all EOS token probabilities in propagate_eos mode."""
     weights = torch.tensor(
         [0.1, 0.1, 0.4, 0.1, 0.1, 0.1, 0.1, 0.1]
     )  # "!", ".", "</s>" are EOS
 
-    masses = eos_trie.weight_sum_with_eos(weights, generation_mode=True)
+    masses = eos_trie.weight_sum_with_eos(weights, mode=TrieMode.PROPAGATE_EOS)
 
     # The mass of the EOS node should be the sum of all defined EOS tokens
     expected_eos_mass = (
@@ -89,15 +90,15 @@ def test_generation_mode_eos_node_aggregation(eos_trie: TokenByteTrie):
 
 
 def test_root_mass_conservation(eos_trie: TokenByteTrie):
-    """5. Validates that the root node's mass is correct in both modes, conserving total probability."""
+    """Validates that the root node's mass is correct in both modes, conserving total probability."""
     weights = torch.tensor([0.1, 0.1, 0.4, 0.1, 0.1, 0.1, 0.1, 0.1])
     total_prob = torch.sum(weights).item()
 
-    # Conditioning mode: root mass should be the sum of all token probabilities
-    masses_cond = eos_trie.weight_sum_with_eos(weights, generation_mode=False)
-    assert np.isclose(masses_cond[eos_trie.root], total_prob)
+    # No_eos mode: root mass should be the sum of all token probabilities
+    masses_no_eos = eos_trie.weight_sum_with_eos(weights, mode=TrieMode.NO_EOS)
+    assert np.isclose(masses_no_eos[eos_trie.root], total_prob)
 
-    # Generation mode: root mass should also be the sum of all token probabilities,
+    # Propagate_eos mode: root mass should also be the sum of all token probabilities,
     # because the mass of the EOS node is added back to the root.
-    masses_gen = eos_trie.weight_sum_with_eos(weights, generation_mode=True)
-    assert np.isclose(masses_gen[eos_trie.root], total_prob)
+    masses_propagate_eos = eos_trie.weight_sum_with_eos(weights, mode=TrieMode.PROPAGATE_EOS)
+    assert np.isclose(masses_propagate_eos[eos_trie.root], total_prob)
