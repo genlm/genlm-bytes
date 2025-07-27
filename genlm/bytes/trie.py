@@ -528,25 +528,29 @@ class AsyncTokenByteTrie:
         trie = TokenByteTrie(decode=vocab, **kwargs)
         return cls(trie)
 
-    def _queue_request(self, request, op):
+    def _queue_request(self, ws, mode, op):
         if not self._task or self._task.done():
             self.start()
 
         future = asyncio.get_running_loop().create_future()
-        self._queue.put_nowait((request, future, op))
+        self._queue.put_nowait(((ws, mode), future, op))
         return future
 
-    async def weight_sum(self, ws):
+    async def weight_sum(self, ws, mode=None):
         """Queue a `weight_sum` request. Multiple concurrent calls will be automatically batched
-        together.
+        together by (operation, mode) pairs.
 
         Args:
             ws (torch.Tensor): Token weights, shape (`len(self.trie.decode)`,).
+            mode (TrieMode, optional): Trie mode determining EOS handling. Defaults to NO_EOS.
 
         Returns:
             (np.ndarray): The calculated mass sums for the given distribution.
         """
-        return await self._queue_request(ws, TrieOp.SUM)
+        from .byte_lm.trie_state import TrieMode
+        if mode is None:
+            mode = TrieMode.NO_EOS
+        return await self._queue_request(ws, mode, TrieOp.SUM)
 
     async def weight_max(self, ws):
         """Queue a `weight_max` request. Multiple concurrent calls will be automatically batched
@@ -558,21 +562,25 @@ class AsyncTokenByteTrie:
         Returns:
             (np.ndarray): The calculated max weights for the given distribution.
         """
-        return await self._queue_request(ws, TrieOp.MAX)
+        # For MAX, mode doesn't matter so use NO_EOS as default
+        from .byte_lm.trie_state import TrieMode
+        return await self._queue_request(ws, TrieMode.NO_EOS, TrieOp.MAX)
 
     async def weight_sum_with_eos(self, ws, mode=None):
-        """Compute weight sums with mode-aware EOS token handling.
+        """Queue a `weight_sum_with_eos` request. Multiple concurrent calls will be automatically 
+        batched together by mode.
 
         Args:
             ws (torch.Tensor): Token weights tensor
-            mode (TrieMode, optional): Trie mode determining EOS handling
+            mode (TrieMode, optional): Trie mode determining EOS handling. Defaults to PROPAGATE_EOS.
 
         Returns:
             (np.ndarray): Weight sums with appropriate EOS handling
         """
-        # For now, delegate directly to the underlying trie
-        # TODO: Could potentially batch these requests too in the future
-        return self.trie.weight_sum_with_eos(ws, mode)
+        from .byte_lm.trie_state import TrieMode
+        if mode is None:
+            mode = TrieMode.PROPAGATE_EOS
+        return await self._queue_request(ws, mode, TrieOp.SUM)
 
     def start(self):
         """Start the background processing task if not already running."""
@@ -586,7 +594,7 @@ class AsyncTokenByteTrie:
         """Background task that processes queued weight sum and max requests.
 
         Continuously monitors the queue for new requests and processes them in batches
-        using the underlying trie implementation.
+        grouped by (operation, mode) pairs using the underlying trie implementation.
 
         Raises:
             (Exception): If any error occurs during processing, it is propagated to all
@@ -594,29 +602,33 @@ class AsyncTokenByteTrie:
         """
         while True:
             try:
-                op_groups = defaultdict(list)
+                # Group by (operation, mode) pairs for efficient batching
+                op_mode_groups = defaultdict(list)
 
-                request, future, op = await self._queue.get()
-                op_groups[op].append((request, future))
+                (ws, mode), future, op = await self._queue.get()
+                op_mode_groups[(op, mode)].append(((ws, mode), future))
 
                 try:
                     while True:
-                        request, future, op = self._queue.get_nowait()
-                        op_groups[op].append((request, future))
+                        (ws, mode), future, op = self._queue.get_nowait()
+                        op_mode_groups[(op, mode)].append(((ws, mode), future))
                 except asyncio.QueueEmpty:
                     pass
 
-                for op, group in op_groups.items():
+                for (op, mode), group in op_mode_groups.items():
                     requests, futures = zip(*group)
+                    # Extract just the ws tensors from the (ws, mode) tuples
+                    ws_list = [req[0] for req in requests]
 
                     if op == TrieOp.SUM:
                         if logger.isEnabledFor(logging.DEBUG):
-                            logger.debug(f"processing {len(requests)} sum requests")
-                        results = self.trie.batch_weight_sum(requests)
+                            logger.debug(f"processing {len(ws_list)} sum requests with mode {mode}")
+                        results = self.trie.batch_weight_sum(ws_list, mode=mode)
                     elif op == TrieOp.MAX:
                         if logger.isEnabledFor(logging.DEBUG):
-                            logger.debug(f"processing {len(requests)} max requests")
-                        results = self.trie.batch_weight_max(requests)
+                            logger.debug(f"processing {len(ws_list)} max requests")
+                        # MAX operations don't need mode, so use the original batch_weight_max
+                        results = self.trie.batch_weight_max(ws_list)
                     else:
                         raise ValueError(f"Unknown trie operation: {op}")
 
@@ -624,7 +636,7 @@ class AsyncTokenByteTrie:
                         future.set_result(result)
 
             except Exception as e:
-                for group in op_groups.values():
+                for group in op_mode_groups.values():
                     for _, future in group:
                         if not future.done():
                             future.set_exception(e)

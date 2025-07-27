@@ -213,11 +213,12 @@ async def test_async_trie_cleanup(mock_llm):
 
 @pytest.mark.asyncio
 async def test_async_error_handling(decode):
+    from genlm.bytes.byte_lm.trie_state import TrieMode
     async_trie = AsyncTokenByteTrie.from_vocab(decode)
     async_trie.start()
     with pytest.raises(ValueError):
-        future = await async_trie._queue_request(
-            torch.tensor([0.1, 0.2, 0.2, 0.5]), "invalid-op"
+        future = async_trie._queue_request(
+            torch.tensor([0.1, 0.2, 0.2, 0.5]), TrieMode.NO_EOS, "invalid-op"
         )
         await future
 

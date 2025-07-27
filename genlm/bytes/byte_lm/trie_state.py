@@ -99,7 +99,7 @@ class LazyTrieState:
             b (int): Byte to consume
 
         Returns:
-            (LazyTrieState|None): New state after consuming byte, or None if transition invalid
+            (LazyTrieState|None): New state after consuming byte, or None if transition invalid (terminated or EOS)
         """
         # Terminated states cannot consume any more bytes
         if self.mode == TrieMode.TERMINATED:
