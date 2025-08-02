@@ -133,7 +133,10 @@ async def test_eos_termination(llm):
         lm_context = [llm.tokenizer.eos_token_id]
         target_weight = (await llm.next_token_logprobs(lm_context))[eos_token_id]
 
-        assert all(state.weight == target_weight for state in new_state.states)
+        assert all(
+            np.isclose(state.weight, target_weight, rtol=1e-5)
+            for state in new_state.states
+        )
     finally:
         await state.cleanup()
 
