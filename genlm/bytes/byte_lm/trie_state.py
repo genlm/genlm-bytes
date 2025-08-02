@@ -1,20 +1,13 @@
 import torch
 import numpy as np
-from enum import Enum
 from functools import cached_property
 from arsenal import colors
 from .lm_state import StatefulTokenizedLM
 from ..util import escape, LazyByteProbs
+from ..trie import TrieMode
 
 # EOS byte constant - using 257 as the virtual EOS byte
 EOS = 257
-
-
-class TrieMode(Enum):
-    """Modes for trie state behavior."""
-    NO_EOS = "no_eos"              # EOS tokens behave like normal tokens  
-    PROPAGATE_EOS = "propagate_eos" # EOS tokens get special handling (aggregated to EOS node)
-    TERMINATED = "terminated"       # EOS consumed, sequence ended
 
 
 class LazyTrieState:
@@ -30,9 +23,20 @@ class LazyTrieState:
         node (int): Current node in the trie
         weight (float): Cumulative log probability of the path to this node
         mass (numpy.ndarray, optional): Masses for each node in the trie for the current state
+        mode (TrieMode): Trie mode to use
+        terminated (bool): Whether the state is terminated (EOS has been consumed)
     """
 
-    def __init__(self, lm_state, trie, node, weight, mass=None, mode=TrieMode.PROPAGATE_EOS):
+    def __init__(
+        self,
+        lm_state,
+        trie,
+        node,
+        weight,
+        mass=None,
+        mode=TrieMode.WITH_EOS,
+        terminated=False,
+    ):
         self.lm_state = lm_state
         self.trie = trie
         self.node = node
@@ -42,11 +46,10 @@ class LazyTrieState:
         self.mode = mode
         self.root = self.trie.trie.root
         self.children = self.trie.trie.children
-
-
+        self.terminated = terminated
 
     @classmethod
-    def initial(cls, lm, trie, mode=TrieMode.PROPAGATE_EOS):
+    def initial(cls, lm, trie, mode=TrieMode.WITH_EOS):
         """Creates an initial trie state.
 
         Args:
@@ -84,6 +87,18 @@ class LazyTrieState:
             raise ValueError("State is not yet materialized.")
         return self._mass
 
+    def with_mode(self, mode):
+        """Returns a new state with the given mode."""
+        return LazyTrieState(
+            lm_state=self.lm_state,
+            trie=self.trie,
+            node=self.node,
+            weight=self.weight,
+            mass=self._mass,
+            mode=mode,
+            terminated=self.terminated,
+        )
+
     def actions(self):
         """Returns possible byte transitions from current node."""
         return self.children[self.node]
@@ -101,28 +116,9 @@ class LazyTrieState:
         Returns:
             (LazyTrieState|None): New state after consuming byte, or None if transition invalid (terminated or EOS)
         """
-        # Terminated states cannot consume any more bytes
-        if self.mode == TrieMode.TERMINATED:
+        if self.terminated:
             return None
 
-        # EOS transition with weight update
-        if b == EOS and self.mode == TrieMode.PROPAGATE_EOS:
-            # EOS is only available from root node
-            if self.node != self.root or self.trie.trie.eos_node is None:
-                return None
-            
-            # Proper EOS transition with weight update
-            mass = self.mass
-            return LazyTrieState(
-                lm_state=self.lm_state,
-                trie=self.trie,
-                mass=mass,
-                node=self.node,  # Stay at root
-                weight=self.weight + mass[self.trie.trie.eos_node] - mass[self.node],
-                mode=TrieMode.TERMINATED,
-            )
-
-        # Handle normal byte transitions
         if node := self.children[self.node].get(b):
             mass = self.mass
             return LazyTrieState(
@@ -132,6 +128,7 @@ class LazyTrieState:
                 node=node,
                 weight=self.weight + mass[node] - mass[self.node],
                 mode=self.mode,
+                terminated=b == EOS,
             )
 
     def extend(self):
@@ -167,16 +164,6 @@ class LazyTrieState:
         for byte, node in self.actions().items():
             logps[byte if byte is not None else 256] = mass[node] - logZ
 
-        # Add EOS probability if in propagate_eos mode and EOS node exists
-        # EOS is only available from root (where the EOS node is connected)
-        if (
-            self.mode == TrieMode.PROPAGATE_EOS
-            and hasattr(self.trie.trie, "eos_node")
-            and self.trie.trie.eos_node is not None
-            and self.node == self.root
-        ):
-            logps[EOS] = mass[self.trie.trie.eos_node] - logZ
-
         return LazyByteProbs(logps)
 
     async def materialize(self):
@@ -189,9 +176,7 @@ class LazyTrieState:
         """
         if self._mass is None:
             logp_next = await self.lm_state.logp_next()
-            log_mass = await self.trie.weight_sum_with_eos(
-                torch.exp(logp_next), self.mode
-            )
+            log_mass = await self.trie.weight_sum(torch.exp(logp_next), self.mode)
             mass = torch.log(log_mass)
             self._mass = mass.cpu().numpy()
         return self

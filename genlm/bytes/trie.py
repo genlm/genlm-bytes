@@ -9,6 +9,13 @@ EOS = 257
 logger = logging.getLogger(__name__)
 
 
+class TrieMode(Enum):
+    """Modes for trie state behavior."""
+
+    WITHOUT_EOS = "without_eos"  # EOS tokens are treated as normal tokens
+    WITH_EOS = "with_eos"  # EOS tokens get special handling (aggregated to EOS node)
+
+
 class TokenByteTrie:
     """A trie data structure for efficient token-to-byte mapping."""
 
@@ -62,6 +69,10 @@ class TokenByteTrie:
             if token not in self.decode:
                 raise ValueError(f"Atomic token {token} not in vocabulary")
 
+        for token in self.eos_tokens:
+            if token not in self.decode:
+                raise ValueError(f"EOS token {token} not in vocabulary")
+
         self.word2leaf = {}
         self.children = [{}]  # First node is root
         self.root = 0
@@ -88,13 +99,9 @@ class TokenByteTrie:
             self.word2leaf[word] = last
             self.token_id_to_leaf.append((token_id, last))
 
-        # Create single EOS node if we have EOS tokens
-        if self.eos_tokens:
-            self.eos_node = len(self.children)
-            self.children.append({})  # Create the EOS node
-            self.children[self.root][EOS] = (
-                self.eos_node
-            )  # Connect immediately so it gets renumbered
+        self.eos_node = len(self.children)
+        self.children.append({})  # Create the EOS node
+        self.children[self.root][EOS] = self.eos_node
 
         self.leaf2word = dict(zip(self.word2leaf.values(), self.word2leaf.keys()))
         self.jump = [
@@ -171,8 +178,7 @@ class TokenByteTrie:
         self.jump = [np.array(sorted(x.values()), dtype=np.int32) for x in new_children]
 
         # Update EOS node after renumbering
-        if hasattr(self, "eos_node"):
-            self.eos_node = f(self.eos_node)
+        self.eos_node = f(self.eos_node)
 
     def _build_node2prefix(self):
         """Builds a mapping from each node to its prefix.
@@ -210,50 +216,44 @@ class TokenByteTrie:
         The matrix M is constructed such that M[i,j] = 1 if node j is either:
         - The leaf node i itself (self-connection)
         - An ancestor of leaf node i in the trie
-        
+
         For propagate_eos mode, EOS tokens contribute directly to eos_node and root.
         """
         leaf_indices = self.token_id_to_leaf[:, 1]
         parent = self._build_parent_map()
-        # Build no_eos matrix (includes all tokens)
+        # Build no_eos matrix (includes all tokens, doesn't map any tokens to the eos_node)
         rows_no_eos, cols_no_eos = [], []
-        # Build propagate_eos matrix (excludes EOS tokens from ancestor propagation)
-        rows_propagate_eos, cols_propagate_eos = [], []
+        # Build with_eos matrix (maps EOS tokens to the eos_node only)
+        rows_with_eos, cols_with_eos = [], []
 
         for i, node in enumerate(leaf_indices):
             token_id = self.token_id_to_leaf[i, 0]
             token = self.decode[token_id]
-            is_eos = token in self.eos_tokens
 
-            # no_eos matrix: include ALL tokens normally
+            # self-connection
             rows_no_eos.append(i)
             cols_no_eos.append(node)
+            if token not in self.eos_tokens:
+                rows_with_eos.append(i)
+                cols_with_eos.append(node)
+            else:
+                # EOS tokens: contribute directly to eos_node and root
+                rows_with_eos.append(i)
+                cols_with_eos.append(self.eos_node)
+                rows_with_eos.append(i)
+                cols_with_eos.append(self.root)
+
             current = node
             while current in parent:
                 ancestor = parent[current]
                 rows_no_eos.append(i)
                 cols_no_eos.append(ancestor)
+                if token not in self.eos_tokens:
+                    rows_with_eos.append(i)
+                    cols_with_eos.append(ancestor)
                 current = ancestor
 
-            # propagate_eos matrix: handle EOS vs non-EOS tokens differently
-            if is_eos:
-                # EOS tokens: contribute directly to eos_node and root
-                rows_propagate_eos.append(i)
-                cols_propagate_eos.append(self.eos_node)
-                rows_propagate_eos.append(i)
-                cols_propagate_eos.append(self.root)
-            else:
-                # Non-EOS tokens: normal propagation
-                rows_propagate_eos.append(i)
-                cols_propagate_eos.append(node)
-                current = node
-                while current in parent:
-                    ancestor = parent[current]
-                    rows_propagate_eos.append(i)
-                    cols_propagate_eos.append(ancestor)
-                    current = ancestor
-
-        # Build no_eos matrix
+        # Build without_eos matrix
         indices_no_eos = torch.tensor(
             [rows_no_eos, cols_no_eos], dtype=torch.long, device=self.device
         )
@@ -262,19 +262,23 @@ class TokenByteTrie:
             indices_no_eos, values_no_eos, (len(leaf_indices), len(self.children))
         ).to_sparse_csr()
 
-        # Build propagate_eos matrix
-        indices_propagate_eos = torch.tensor(
-            [rows_propagate_eos, cols_propagate_eos], dtype=torch.long, device=self.device
+        # Build with_eos matrix
+        indices_with_eos = torch.tensor(
+            [rows_with_eos, cols_with_eos], dtype=torch.long, device=self.device
         )
-        values_propagate_eos = torch.ones(len(rows_propagate_eos), device=self.device)
-        self.M_propagate_eos = torch.sparse_coo_tensor(
-            indices_propagate_eos, values_propagate_eos, (len(leaf_indices), len(self.children))
+        values_with_eos = torch.ones(len(rows_with_eos), device=self.device)
+        self.M_with_eos = torch.sparse_coo_tensor(
+            indices_with_eos, values_with_eos, (len(leaf_indices), len(self.children))
         ).to_sparse_csr()
 
         # Keep the old matrix for backward compatibility
         self.M = self.M_no_eos
-        self.src_indices = torch.tensor(rows_no_eos, dtype=torch.long, device=self.device)
-        self.dst_indices = torch.tensor(cols_no_eos, dtype=torch.long, device=self.device)
+        self.src_indices = torch.tensor(
+            rows_no_eos, dtype=torch.long, device=self.device
+        )
+        self.dst_indices = torch.tensor(
+            cols_no_eos, dtype=torch.long, device=self.device
+        )
 
     def _preprocess_ws(self, batch_ws):
         """Preprocess weight sums for batch processing.
@@ -300,15 +304,13 @@ class TokenByteTrie:
 
         Args:
             ws (torch.Tensor): Token weights, shape (`len(self.decode)`,).
-            mode (TrieMode, optional): Trie mode - determines matrix selection. 
-                                     If None, defaults to NO_EOS.
+            mode (TrieMode, optional): Trie mode - determines matrix selection.
+                                     If None, defaults to WITHOUT_EOS.
 
         Returns:
             (numpy.ndarray): Summed weights for each node in the trie, shape (num_nodes,).
         """
-        from .byte_lm.trie_state import TrieMode
-        if mode is None:
-            mode = TrieMode.NO_EOS
+        mode = mode or TrieMode.WITHOUT_EOS
         return self.batch_weight_sum(self._preprocess_ws([ws]), mode=mode)[0]
 
     def batch_weight_sum(self, ws, mode=None):
@@ -317,21 +319,19 @@ class TokenByteTrie:
         Args:
             ws (torch.Tensor): Batch of token weights, shape (batch_size × `len(self.decode)`).
             mode (TrieMode, optional): Trie mode - determines matrix selection.
-                                     If None, defaults to NO_EOS.
+                                     If None, defaults to WITHOUT_EOS.
 
         Returns:
             (numpy.ndarray): Summed weights for each node in the trie, shape (batch_size × num_nodes).
         """
-        from .byte_lm.trie_state import TrieMode
-        if mode is None:
-            mode = TrieMode.NO_EOS
-            
+        mode = mode or TrieMode.WITHOUT_EOS
+
         ws = self._preprocess_ws(ws)
         batch_size = ws.shape[0]
         all_masses = []
 
         # Choose matrix based on mode
-        matrix = self.M_propagate_eos if mode == TrieMode.PROPAGATE_EOS else self.M_no_eos
+        matrix = self.M_with_eos if mode == TrieMode.WITH_EOS else self.M_no_eos
 
         # If you are getting illegal memory access errors here,
         # try reducing the max_batch_size.
@@ -378,25 +378,6 @@ class TokenByteTrie:
         )
 
         return result
-
-    def weight_sum_with_eos(self, ws, mode=None):
-        """Compute weight sums with mode-aware EOS token handling.
-
-        EOS logic is now baked into the matrices:
-        - M_no_eos: treats EOS tokens like regular tokens
-        - M_propagate_eos: EOS tokens contribute directly to eos_node and root
-
-        Args:
-            ws (torch.Tensor): Token weights tensor
-            mode (TrieMode): Trie mode determining EOS handling
-
-        Returns:
-            (numpy.ndarray): Weight sums with appropriate EOS handling
-        """
-        from .byte_lm.trie_state import TrieMode
-        if mode is None:
-            mode = TrieMode.PROPAGATE_EOS
-        return self.batch_weight_sum(self._preprocess_ws([ws]), mode=mode)[0]
 
     def visualize(self, ws=None):
         """Visualize the trie structure using Graphviz.
@@ -542,14 +523,12 @@ class AsyncTokenByteTrie:
 
         Args:
             ws (torch.Tensor): Token weights, shape (`len(self.trie.decode)`,).
-            mode (TrieMode, optional): Trie mode determining EOS handling. Defaults to NO_EOS.
+            mode (TrieMode, optional): Trie mode determining EOS handling. Defaults to WITHOUT_EOS.
 
         Returns:
             (np.ndarray): The calculated mass sums for the given distribution.
         """
-        from .byte_lm.trie_state import TrieMode
-        if mode is None:
-            mode = TrieMode.NO_EOS
+        mode = mode or TrieMode.WITHOUT_EOS
         return await self._queue_request(ws, mode, TrieOp.SUM)
 
     async def weight_max(self, ws):
@@ -562,25 +541,8 @@ class AsyncTokenByteTrie:
         Returns:
             (np.ndarray): The calculated max weights for the given distribution.
         """
-        # For MAX, mode doesn't matter so use NO_EOS as default
-        from .byte_lm.trie_state import TrieMode
-        return await self._queue_request(ws, TrieMode.NO_EOS, TrieOp.MAX)
-
-    async def weight_sum_with_eos(self, ws, mode=None):
-        """Queue a `weight_sum_with_eos` request. Multiple concurrent calls will be automatically 
-        batched together by mode.
-
-        Args:
-            ws (torch.Tensor): Token weights tensor
-            mode (TrieMode, optional): Trie mode determining EOS handling. Defaults to PROPAGATE_EOS.
-
-        Returns:
-            (np.ndarray): Weight sums with appropriate EOS handling
-        """
-        from .byte_lm.trie_state import TrieMode
-        if mode is None:
-            mode = TrieMode.PROPAGATE_EOS
-        return await self._queue_request(ws, mode, TrieOp.SUM)
+        # For MAX, mode doesn't matter so use WITHOUT_EOS as default
+        return await self._queue_request(ws, TrieMode.WITHOUT_EOS, TrieOp.MAX)
 
     def start(self):
         """Start the background processing task if not already running."""
@@ -622,11 +584,15 @@ class AsyncTokenByteTrie:
 
                     if op == TrieOp.SUM:
                         if logger.isEnabledFor(logging.DEBUG):
-                            logger.debug(f"processing {len(ws_list)} sum requests with mode {mode}")
+                            logger.debug(
+                                f"processing {len(ws_list)} sum requests with mode {mode}"
+                            )  # pragma: no cover
                         results = self.trie.batch_weight_sum(ws_list, mode=mode)
                     elif op == TrieOp.MAX:
                         if logger.isEnabledFor(logging.DEBUG):
-                            logger.debug(f"processing {len(ws_list)} max requests")
+                            logger.debug(
+                                f"processing {len(ws_list)} max requests"
+                            )  # pragma: no cover
                         # MAX operations don't need mode, so use the original batch_weight_max
                         results = self.trie.batch_weight_max(ws_list)
                     else:
@@ -657,7 +623,7 @@ class AsyncTokenByteTrie:
         if self._task is not None:
             try:
                 self._task.cancel()
-            except RuntimeError:
+            except RuntimeError:  # pragma: no cover
                 # Ignore runtime errors that might occur if event loop is closed
                 pass
             self._task = None

@@ -14,14 +14,12 @@ class LazyByteProbs:
     Args:
         ps (list): List of probabilities (256 bytes + 1 EOT + 1 EOS = 258 total)
         log_space (bool, optional): Whether probabilities are in log space. Defaults to True
-        generation_mode (bool, optional): Whether EOS is available for generation. Defaults to True
     """
 
-    def __init__(self, ps, log_space=True, generation_mode=True):
+    def __init__(self, ps, log_space=True):
         assert len(ps) == 258  # Fixed size: 256 bytes + 1 EOT + 1 EOS
         self.ps = ps
         self.log_space = log_space
-        self.generation_mode = generation_mode
 
     def __getitem__(self, b):
         """Get probability for a byte, EOT, or EOS.
@@ -34,10 +32,12 @@ class LazyByteProbs:
         """
         if b is None:  # EOT
             return self.ps[256]
-        elif b == 257:  # EOS token: only available during generation
-            return self.ps[257] if self.generation_mode else -np.inf
+        elif b == 257:  # EOS token
+            return self.ps[257]
         elif b >= 258:  # invalid index
-            return -np.inf if self.log_space else 0
+            raise ValueError(
+                f"Invalid index: {b}. Must be between 0 and 257, or None for EOT."
+            )
         else:  # Regular byte
             return self.ps[b]
 
@@ -53,9 +53,8 @@ class LazyByteProbs:
             Q[b] = p
         # EOT (256)
         Q[None] = self.ps[256]
-        # EOS (257) - only available during generation
-        if self.generation_mode:
-            Q[257] = self.ps[257]
+        # EOS (257)
+        Q[257] = self.ps[257]
         return Q
 
     def pretty(self):

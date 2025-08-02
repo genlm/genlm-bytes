@@ -2,7 +2,7 @@ import pytest
 import numpy as np
 import pandas as pd
 
-from genlm.bytes.util import LazyByteProbs, Chart, format_table, escape
+from genlm.bytes.util import LazyByteProbs, Chart, format_table, escape, logsumexp
 
 
 class TestLazyByteProbs:
@@ -79,6 +79,12 @@ class TestLazyByteProbs:
                 assert len(key) == 1
                 assert pretty_chart[key] == 0.1
 
+    def test_invalid_index(self):
+        ps = list(range(258))
+        lazy_probs = LazyByteProbs(ps)
+        with pytest.raises(ValueError):
+            lazy_probs[258]
+
 
 def test_format_table():
     rows = [["a", "b"], ["c", "d"]]
@@ -86,6 +92,12 @@ def test_format_table():
     result = format_table(rows, headings)
 
     assert "<table>" in result
+
+
+def test_logsumexp_empty():
+    arr = []
+    result = logsumexp(arr)
+    assert result == -np.inf
 
 
 class TestChart:

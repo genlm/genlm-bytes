@@ -85,7 +85,7 @@ class StatefulByteLM(ABC):
         Returns:
             (StatefulByteLM): New state with added byte
         """
-        pass
+        pass  # pragma: no cover
 
     def prune(self):
         """Prunes the current state if needed.
@@ -95,7 +95,9 @@ class StatefulByteLM(ABC):
         Returns:
             (StatefulByteLM): Pruned state
         """
-        return self
+        raise NotImplementedError(
+            "Subclasses must implement this method"
+        )  # pragma: no cover
 
     @abstractmethod
     async def logp_next(self):
@@ -104,21 +106,7 @@ class StatefulByteLM(ABC):
         Returns:
             (LazyByteProbs): Log probabilities for next possible bytes
         """
-        pass
-
-    async def prefill(self, bs):
-        """Prefills the model state with a sequence of bytes.
-
-        Args:
-            bs (list[int]): Sequence of bytes to add to state
-
-        Returns:
-            (StatefulByteLM): New state with all bytes added
-        """
-        state = self
-        for b in bs:
-            state = await (state.prune() << b)
-        return state
+        pass  # pragma: no cover
 
     async def greedy(self, context, steps):
         """Performs greedy decoding for given number of steps.
@@ -161,4 +149,4 @@ class StatefulByteLM(ABC):
 
     async def cleanup(self):
         """Performs any necessary cleanup of the model state."""
-        pass
+        pass  # pragma: no cover

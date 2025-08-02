@@ -21,14 +21,14 @@ class BeamParams:
         prune_threshold (float, optional): Probability threshold for pruning candidates.
             Candidates with probability below this are removed. Defaults to 0.0
         verbose (bool, optional): Whether to print the beam state at each step. Defaults to False
-        eos_tokens (set, optional): Set of tokens that should be treated as EOS. When configured,
+        eos_tokens (list[bytes], optional): List of tokens that should be treated as EOS. When configured,
             EOS tokens will terminate generation when sampled. Defaults to None
     """
 
     K: int
     prune_threshold: float = 0.0
     verbose: bool = False
-    eos_tokens: set = None
+    eos_tokens: list[bytes] = None
 
     def __post_init__(self):
         if self.prune_threshold < 0:
@@ -38,8 +38,7 @@ class BeamParams:
         self.log_prune_threshold = (
             np.log(self.prune_threshold) if self.prune_threshold > 0 else -np.inf
         )
-        if self.eos_tokens is None:
-            self.eos_tokens = set()
+        self.eos_tokens = set(self.eos_tokens) if self.eos_tokens else {}
 
 
 class ByteBeamState(StatefulByteLM):
@@ -53,15 +52,9 @@ class ByteBeamState(StatefulByteLM):
         params (BeamParams): Parameters controlling beam search behavior
     """
 
-    def __init__(self, states, params, mode=TrieMode.PROPAGATE_EOS):
-        self.states = sorted(
-            states,
-            key=lambda b: -b.weight,
-        )
+    def __init__(self, states, params):
+        self.states = sorted(states, key=lambda b: -b.weight)
         self.params = params
-        self.mode = mode
-
-
 
     @classmethod
     async def initial(cls, llm, params, trie_opts=None):
@@ -77,17 +70,14 @@ class ByteBeamState(StatefulByteLM):
             (ByteBeamState): Initial beam state.
         """
         # Handle EOS tokens
-        trie_options = trie_opts or {}
-        trie_options["eos_tokens"] = params.eos_tokens
+        trie_opts = trie_opts or {}
+        trie_opts["eos_tokens"] = params.eos_tokens
 
-        state = LazyTrieState.initial(
-            llm,
-            AsyncTokenByteTrie.from_vocab(
-                get_byte_vocab(llm.tokenizer), **trie_options
-            ),
-            mode=TrieMode.PROPAGATE_EOS,
+        async_trie = AsyncTokenByteTrie.from_vocab(
+            get_byte_vocab(llm.tokenizer), **trie_opts
         )
-        return cls([await state.materialize()], params, mode=TrieMode.PROPAGATE_EOS)
+        state = LazyTrieState.initial(llm, async_trie, mode=TrieMode.WITH_EOS)
+        return cls([await state.materialize()], params)
 
     def __iter__(self):
         return iter(self.states)
@@ -111,7 +101,6 @@ class ByteBeamState(StatefulByteLM):
         Returns:
             (ByteBeamState): New beam state after processing the byte.
         """
-
         new_states = []
         for state in self:
             if new_state := state << a:
@@ -122,7 +111,7 @@ class ByteBeamState(StatefulByteLM):
             if new_state := state << a:
                 new_states.append(new_state)
 
-        new_state = ByteBeamState(new_states, self.params, mode=self.mode)
+        new_state = ByteBeamState(new_states, self.params)
 
         if self.params.verbose:
             print()
@@ -146,9 +135,8 @@ class ByteBeamState(StatefulByteLM):
             logqs.append(state.logp_next.ps + state.weight)
 
         logqs = np.stack(logqs, axis=0)  # shape: (num_states, array_size)
-        logqs[
-            : len(self), -2
-        ] = -np.inf  # mask EOT positions of non-extended (EOT is at index 256)
+        # mask EOT positions of non-extended (EOT is at index 256)
+        logqs[: len(self), -2] = -np.inf
         logps = scipy_logsumexp(logqs, axis=0)
 
         return LazyByteProbs(logps - logsumexp(logps))
@@ -189,7 +177,7 @@ class ByteBeamState(StatefulByteLM):
             for state in self
             if state.weight - self.logZ > self.params.log_prune_threshold
         ][: self.params.K]
-        return ByteBeamState(new_states, self.params, mode=self.mode)
+        return ByteBeamState(new_states, self.params)
 
     def __repr__(self):
         desc = colors.bold % f"Z: {self.logZ}\n" + colors.bold % "Candidates:\n"
@@ -201,50 +189,38 @@ class ByteBeamState(StatefulByteLM):
 
     def with_mode(self, mode):
         """Create a new beam state with specified trie mode.
-        
+
         Args:
             mode (TrieMode): Trie mode for the new beam state
-            
+
         Returns:
             (ByteBeamState): New beam state with updated mode
         """
-        new_states = []
-        for state in self.states:
-            new_state = LazyTrieState(
-                lm_state=state.lm_state,
-                trie=state.trie,
-                node=state.node,
-                weight=state.weight,
-                mass=state._mass,
-                mode=mode
-            )
-            new_states.append(new_state)
-        
-        return ByteBeamState(new_states, self.params, mode=mode)
-
-
+        return ByteBeamState(
+            states=[state.with_mode(mode) for state in self.states],
+            params=self.params,
+        )
 
     async def prefill(self, bs):
-        """Prefill with context, handling EOS tokens appropriately.
+        """Prefill the beam on a sequence of bytes.
 
-        During prefill (conditioning), EOS tokens are treated as normal tokens
-        and don't cause termination. After prefill, beam is always in generation mode.
+        During prefilling, EOS tokens are treated as normal tokens and don't cause termination.
 
         Args:
-            bs (bytes): Byte sequence to prefill with
+            bs (bytes): Byte sequence to prefill on
 
         Returns:
-            (ByteBeamState): New beam state after prefilling in generation mode
+            (ByteBeamState): New beam state after prefilling
         """
         # Create no_eos beam for prefill (EOS tokens treated as normal)
-        no_eos_beam = self.with_mode(TrieMode.NO_EOS)
-        
+        no_eos_beam = self.with_mode(TrieMode.WITHOUT_EOS)
+
         # Do prefill operations on no_eos beam
         for b in bs:
             no_eos_beam = await (no_eos_beam.prune() << b)
-        
-        # Return as propagate_eos beam (EOS tokens get special handling after prefill)
-        return no_eos_beam.with_mode(TrieMode.PROPAGATE_EOS)
+
+        # Return as with_eos beam (EOS tokens get special handling after prefill)
+        return no_eos_beam.with_mode(TrieMode.WITH_EOS)
 
     async def cleanup(self):
         """Cleans up resources used by the candidates."""
