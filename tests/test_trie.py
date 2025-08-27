@@ -6,6 +6,7 @@ from transformers import AutoTokenizer
 
 from genlm.backend.llm import MockAsyncLM
 from genlm.bytes import TokenByteTrie, AsyncTokenByteTrie
+from genlm.bytes.byte_lm.trie_state import TrieMode
 
 from hypothesis import given, strategies as st
 
@@ -80,6 +81,8 @@ def assert_weights_close(trie, leaf_wants, internal_wants, haves, f):
         if node in trie.leaf2word:
             continue
         have = haves[node]
+        if prefix == [257]:  # EOS node
+            continue
         want = internal_wants[f(prefix)]
         assert np.isclose(have, want, rtol=1e-5, atol=1e-8), [have, want, prefix]
 
@@ -215,8 +218,8 @@ async def test_async_error_handling(decode):
     async_trie = AsyncTokenByteTrie.from_vocab(decode)
     async_trie.start()
     with pytest.raises(ValueError):
-        future = await async_trie._queue_request(
-            torch.tensor([0.1, 0.2, 0.2, 0.5]), "invalid-op"
+        future = async_trie._queue_request(
+            torch.tensor([0.1, 0.2, 0.2, 0.5]), TrieMode.WITHOUT_EOS, "invalid-op"
         )
         await future
 
@@ -276,6 +279,121 @@ def test_visualize(decode):
         trie.visualize(torch.tensor([0.1] * (len(trie.children) + 1)))
 
 
+@pytest.mark.asyncio
+async def test_eos_token_configuration():
+    """Test EOS token configuration in trie."""
+    vocab = [b"hello", b"world", b"<eos>"]
+    eos_tokens = [b"<eos>"]
+
+    # Test trie with EOS tokens
+    trie = TokenByteTrie(decode=vocab, eos_tokens=eos_tokens)
+
+    # EOS token should be in the eos_tokens set
+    assert b"<eos>" in trie.eos_tokens
+    assert len(trie.eos_tokens) == 1
+
+    # EOS token IDs should be populated
+    assert len(trie.eos_token_ids) == 1
+    assert trie.eos_token_ids[0] == 2  # "<eos>" is at index 2
+
+    # EOS node should exist
+    assert hasattr(trie, "eos_node")
+    assert trie.eos_node is not None
+
+    # EOS node should be connected to root
+    assert trie.children[trie.root].get(257) == trie.eos_node
+
+
+@pytest.mark.asyncio
+async def test_eos_dual_matrix_behavior():
+    """Test dual matrix behavior for propagate_eos vs no_eos modes."""
+    vocab = [b"hello", b"world", b"<eos>"]
+    eos_tokens = [b"<eos>"]
+
+    trie = TokenByteTrie(decode=vocab, eos_tokens=eos_tokens)
+    weights = torch.tensor([0.3, 0.4, 0.3])  # hello, world, <eos>
+
+    # Test no_eos mode (no EOS node mass)
+    masses_without_eos = trie.weight_sum(weights, mode=TrieMode.WITHOUT_EOS)
+
+    # Test propagate_eos mode (excludes EOS tokens' mass from ancestors and moves it to the EOS node)
+    masses_with_eos = trie.weight_sum(weights, mode=TrieMode.WITH_EOS)
+
+    # Both should be valid arrays
+    assert len(masses_without_eos) == len(trie.children)
+    assert len(masses_with_eos) == len(trie.children)
+
+    root_mass_without_eos = masses_without_eos[trie.root]
+    root_mass_with_eos = masses_with_eos[trie.root]
+
+    assert np.isclose(root_mass_without_eos.item(), 1.0, rtol=1e-5)
+    assert np.isclose(root_mass_with_eos.item(), 1.0, rtol=1e-5)
+
+    # The masses should be different between modes
+    assert not np.allclose(
+        masses_without_eos.cpu().numpy(), masses_with_eos.cpu().numpy()
+    )
+
+
+@pytest.mark.asyncio
+async def test_eos_weight_sum_with_eos():
+    """Test weight_sum_with_eos method."""
+    vocab = [b"hello", b"world", b"<eos>"]
+    eos_tokens = [b"<eos>"]
+
+    trie = TokenByteTrie(decode=vocab, eos_tokens=eos_tokens)
+    weights = torch.tensor([0.3, 0.4, 0.1])  # hello, world, <eos>
+
+    # Test with_eos mode
+    masses_with_eos = trie.weight_sum(weights, mode=TrieMode.WITH_EOS)
+
+    # Should return array with EOS node included
+    assert len(masses_with_eos) == len(trie.children)
+    assert not np.isnan(masses_with_eos.cpu().numpy()).any()
+
+    # EOS node should have the EOS token probability
+    eos_mass = masses_with_eos[trie.eos_node]
+    assert np.isclose(eos_mass.item(), 0.1)  # EOS token weight
+
+
+@pytest.mark.asyncio
+async def test_eos_multiple_tokens():
+    """Test with multiple EOS tokens."""
+    vocab = [b"hello", b"world", b"dog", b"dogs"]
+    eos_tokens = [b"dog", b"dogs"]
+
+    trie = TokenByteTrie(decode=vocab, eos_tokens=eos_tokens)
+
+    # Should have both EOS tokens
+    assert len(trie.eos_tokens) == 2
+    assert b"dog" in trie.eos_tokens
+    assert b"dogs" in trie.eos_tokens
+
+    # Should have both EOS token IDs
+    assert len(trie.eos_token_ids) == 2
+    assert 2 in trie.eos_token_ids  # dog at index 2
+    assert 3 in trie.eos_token_ids  # dogs at index 3
+
+    # Test weight sum with multiple EOS tokens
+    weights = torch.tensor([0.2, 0.3, 0.1, 0.8])  # hello, world, dog, dogs
+    masses = trie.weight_sum(weights, mode=TrieMode.WITH_EOS)
+
+    # EOS node should collect both EOS token masses
+    eos_mass = masses[trie.eos_node]
+    expected_eos_mass = 0.1 + 0.8  # dog + dogs
+    assert np.isclose(eos_mass.item(), expected_eos_mass, rtol=1e-5)
+
+
 def test_invalid_device():
     with pytest.raises(ValueError):
         TokenByteTrie(decode=["a", "b", "c"], device="invalid")
+
+
+def test_invalid_eos_tokens():
+    with pytest.raises(ValueError):
+        TokenByteTrie(decode=["a", "b", "c"], eos_tokens=["d"])
+
+
+def test_invalid_atomic_tokens():
+    with pytest.raises(ValueError):
+        TokenByteTrie(decode=["a", "b", "c"], atomic_tokens=["d"])

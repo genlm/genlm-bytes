@@ -4,6 +4,10 @@ from functools import cached_property
 from arsenal import colors
 from .lm_state import StatefulTokenizedLM
 from ..util import escape, LazyByteProbs
+from ..trie import TrieMode
+
+# EOS byte constant - using 257 as the virtual EOS byte
+EOS = 257
 
 
 class LazyTrieState:
@@ -19,25 +23,39 @@ class LazyTrieState:
         node (int): Current node in the trie
         weight (float): Cumulative log probability of the path to this node
         mass (numpy.ndarray, optional): Masses for each node in the trie for the current state
+        mode (TrieMode): Trie mode to use
+        terminated (bool): Whether the state is terminated (EOS has been consumed)
     """
 
-    def __init__(self, lm_state, trie, node, weight, mass=None):
+    def __init__(
+        self,
+        lm_state,
+        trie,
+        node,
+        weight,
+        mass=None,
+        mode=TrieMode.WITH_EOS,
+        terminated=False,
+    ):
         self.lm_state = lm_state
         self.trie = trie
         self.node = node
         self.weight = weight
         self._mass = mass
         self._extend = None
+        self.mode = mode
         self.root = self.trie.trie.root
         self.children = self.trie.trie.children
+        self.terminated = terminated
 
     @classmethod
-    def initial(cls, lm, trie):
+    def initial(cls, lm, trie, mode=TrieMode.WITH_EOS):
         """Creates an initial trie state.
 
         Args:
             lm (genlm.backend.AsyncLM): Language model to use
             trie (TokenByteTrie): TokenByteTrie structure for byte-to-token mapping
+            mode (TrieMode): Trie mode to use
 
         Returns:
             (LazyTrieState): Initial state at root of trie with weight 0.0
@@ -47,6 +65,7 @@ class LazyTrieState:
             node=trie.trie.root,
             lm_state=StatefulTokenizedLM.initial(lm),
             weight=0.0,
+            mode=mode,
         )
 
     @property
@@ -68,6 +87,18 @@ class LazyTrieState:
             raise ValueError("State is not yet materialized.")
         return self._mass
 
+    def with_mode(self, mode):
+        """Returns a new state with the given mode."""
+        return LazyTrieState(
+            lm_state=self.lm_state,
+            trie=self.trie,
+            node=self.node,
+            weight=self.weight,
+            mass=self._mass,
+            mode=mode,
+            terminated=self.terminated,
+        )
+
     def actions(self):
         """Returns possible byte transitions from current node."""
         return self.children[self.node]
@@ -83,8 +114,11 @@ class LazyTrieState:
             b (int): Byte to consume
 
         Returns:
-            (LazyTrieState|None): New state after consuming byte, or None if transition invalid
+            (LazyTrieState|None): New state after consuming byte, or None if transition invalid (terminated or EOS)
         """
+        if self.terminated:
+            return None
+
         if node := self.children[self.node].get(b):
             mass = self.mass
             return LazyTrieState(
@@ -93,6 +127,8 @@ class LazyTrieState:
                 mass=mass,
                 node=node,
                 weight=self.weight + mass[node] - mass[self.node],
+                mode=self.mode,
+                terminated=b == EOS,
             )
 
     def extend(self):
@@ -110,6 +146,7 @@ class LazyTrieState:
                     trie=self.trie,
                     node=self.root,
                     weight=self.weight + mass[eot_node] - mass[self.node],
+                    mode=self.mode,
                 )
         return self._extend
 
@@ -120,11 +157,13 @@ class LazyTrieState:
         Returns:
             (LazyByteProbs): Lazy log probability distribution over possible next bytes
         """
-        logps = np.full(257, -np.inf)  # 257 for EOT
+        logps = np.full(258, -np.inf)  # 258 for EOT, EOS + 256 for normal bytes
         mass = self.mass
         logZ = mass[self.node]
+
         for byte, node in self.actions().items():
             logps[byte if byte is not None else 256] = mass[node] - logZ
+
         return LazyByteProbs(logps)
 
     async def materialize(self):
@@ -137,7 +176,7 @@ class LazyTrieState:
         """
         if self._mass is None:
             logp_next = await self.lm_state.logp_next()
-            log_mass = await self.trie.weight_sum(torch.exp(logp_next))
+            log_mass = await self.trie.weight_sum(torch.exp(logp_next), self.mode)
             mass = torch.log(log_mass)
             self._mass = mass.cpu().numpy()
         return self

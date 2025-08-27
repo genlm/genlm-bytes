@@ -9,41 +9,52 @@ from arsenal import colors
 class LazyByteProbs:
     """Represents a lazy (log) probability distribution over bytes.
 
-    Handles probability distributions over 256 possible bytes plus an EOT (End of Token) symbol.
+    Handles probability distributions over 256 possible bytes plus an EOT (End of Token) symbol and a single EOS (End of Sequence) symbol.
 
     Args:
-        ps (list): List of 257 probabilities (256 bytes + 1 EOT)
+        ps (list): List of probabilities (256 bytes + 1 EOT + 1 EOS = 258 total)
         log_space (bool, optional): Whether probabilities are in log space. Defaults to True
     """
 
     def __init__(self, ps, log_space=True):
-        assert len(ps) == 257  # 256 bytes + 1 EOT
+        assert len(ps) == 258  # Fixed size: 256 bytes + 1 EOT + 1 EOS
         self.ps = ps
         self.log_space = log_space
 
     def __getitem__(self, b):
-        """Get probability for a byte or EOT.
+        """Get probability for a byte, EOT, or EOS.
 
         Args:
-            b (int|None): Byte value or None for EOT
+            b (int|None): Byte value, None for EOT, or 257 for EOS
 
         Returns:
-            (float): Probability (or log probability) for the byte/EOT
+            (float): Probability (or log probability) for the byte/EOT/EOS
         """
-        if b is None:
-            return self.ps[-1]
-        return self.ps[b]
+        if b is None:  # EOT
+            return self.ps[256]
+        elif b == 257:  # EOS token
+            return self.ps[257]
+        elif b >= 258:  # invalid index
+            raise ValueError(
+                f"Invalid index: {b}. Must be between 0 and 257, or None for EOT."
+            )
+        else:  # Regular byte
+            return self.ps[b]
 
     def materialize(self):
         """Materializes the probability distribution into a Chart.
 
         Returns:
-            (Chart): Chart with probabilities for each byte/EOT
+            (Chart): Chart with probabilities for each byte/EOT/EOS
         """
         Q = Chart(-np.inf if self.log_space else 0)
-        for b, p in enumerate(self.ps[:-1]):
+        # Regular bytes (0-255)
+        for b, p in enumerate(self.ps[:256]):
             Q[b] = p
-        Q[None] = self.ps[-1]
+        # EOT (256)
+        Q[None] = self.ps[256]
+        # EOS (257)
+        Q[257] = self.ps[257]
         return Q
 
     def pretty(self):
@@ -53,7 +64,11 @@ class LazyByteProbs:
             (str): Pretty string representation of the probability distribution
         """
         return self.materialize().map_keys(
-            lambda x: bytes([x]) if x is not None else "EOT"
+            lambda x: bytes([x])
+            if isinstance(x, int) and 0 <= x <= 255
+            else "EOS"
+            if x == 257
+            else "EOT"
         )
 
 
