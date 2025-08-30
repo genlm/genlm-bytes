@@ -22,34 +22,40 @@ async def run(verbose: bool, topk: int, beam_width: int):
 
         current = beam
         for t in range(len(bs)):
+            target = bs[t]
             logp_next = await current.logp_next()
 
-            # if verbose:
-            #     pretty = logp_next.pretty().top(topk)
-            #     print(f"Step {t}: top-{topk} next-byte log-probabilities")
-            #     for key, value in pretty.items():
-            #         print(key, value)
-            #     print("Beam state:")
-            #     print(current)
-            #     print()
-
-            # If next byte is unreachable, attempt adaptive token healing.
-            if logp_next[bs[t]] == -float("inf"):
-                healed = await adaptive_heal(current, bs[t])
+            # If next byte is unreachable, attempt adaptive token healing, then consume the same byte.
+            if logp_next[target] == -float("inf"):
+                healed = await adaptive_heal(current, target)
                 if healed is None:
-                    raise AssertionError(f"Unreachable byte at t={t} and adaptive healing failed")
-                current = healed
+                    raise AssertionError(
+                        f"Unreachable byte at t={t} and adaptive healing failed"
+                    )
+                next_beam = await (healed.prune() << target)
+                if len(next_beam) == 0:
+                    raise AssertionError(
+                        f"Healed state still cannot consume target byte at t={t}"
+                    )
+                current = next_beam
                 continue
 
             # Normal advance
-            next_beam = await (current.prune() << bs[t])
+            next_beam = await (current.prune() << target)
 
-            # If beam went empty after advance, try adaptive healing from the previous state.
+            # If beam went empty after advance, try adaptive healing and then consume the same byte.
             if len(next_beam) == 0:
-                healed = await adaptive_heal(current, bs[t])
+                healed = await adaptive_heal(current, target)
                 if healed is None:
-                    raise AssertionError(f"Beam empty after advance at t={t} and adaptive healing failed")
-                current = healed
+                    raise AssertionError(
+                        f"Beam empty after advance at t={t} and adaptive healing failed"
+                    )
+                next_beam2 = await (healed.prune() << target)
+                if len(next_beam2) == 0:
+                    raise AssertionError(
+                        f"Healed state still cannot consume target byte at t={t}"
+                    )
+                current = next_beam2
             else:
                 current = next_beam
 
@@ -66,56 +72,133 @@ async def run(verbose: bool, topk: int, beam_width: int):
         await beam.cleanup()
 
 
-async def adaptive_heal(current: ByteBeamState, next_byte: int) -> ByteBeamState | None:
-    # K=1 path: operate on the best candidate only
+async def adaptive_heal(current: ByteBeamState, next_byte: int, *, max_backoff: int | None = None) -> ByteBeamState | None:
+    """Byte-preserving adaptive token healing (K=1).
+
+    Retokenize the tail of the current token to a valid earlier boundary, commit that
+    token, re-materialize, and replay the already consumed suffix so that the next
+    byte becomes reachable — without changing any previously consumed bytes.
+    """
     if len(current) == 0:
         return None
 
+    # Work on the top state only (K=1 scenario)
     s = current.states[0]
-    # Ensure masses are available
-    s = await s.materialize()
+    s = await s.materialize()  # ensure we have masses for current token state
 
     trie = s.trie.trie
     children = trie.children
 
-    # Reconstruct the path of nodes for the current partial prefix
-    prefix = s.partial  # list of byte ints
-    node_path = [trie.root]
+    P = s.partial  # bytes since last token boundary (list[int])
+    verbose = bool(getattr(current.params, "verbose", False))
+    if verbose:
+        try:
+            nb_disp = repr(bytes([next_byte])) if 0 <= next_byte <= 255 else str(next_byte)
+        except Exception:
+            nb_disp = str(next_byte)
+        print(
+            f"[heal] Start: next_byte={nb_disp}, P={repr(bytes(P))}, max_backoff={max_backoff}"
+        )
+
+    # Base weight at the start of the current token (before consuming P)
+    # s.mass is log-mass; contribution of P is (mass[node] - mass[root])
+    base_weight = s.weight - (s.mass[s.node] - s.mass[trie.root])
+
+    # Precompute the chain of nodes for P (from root)
+    path_nodes = [trie.root]
     node = trie.root
-    for letter in prefix:
-        if letter in children[node]:
-            node = children[node][letter]
-            node_path.append(node)
-        else:
+    ok = True
+    for b in P:
+        nxt = children[node].get(b)
+        if nxt is None:
+            ok = False
             break
-
-    best = None
-    best_w = -float("inf")
-
-    # Search ancestors (nearest first) for a legal child with next_byte
-    for anc in reversed(node_path):
-        child = children[anc].get(next_byte)
-        if child is None:
-            continue
-        # Heuristic reweighting: replace tail with edge to child using current mass
-        cand_w = s.weight + s.mass[child] - s.mass[anc]
-        if cand_w > best_w:
-            best_w = cand_w
-            best = LazyTrieState(
-                lm_state=s.lm_state,
-                trie=s.trie,
-                node=child,
-                weight=cand_w,
-                mass=s.mass,
-                mode=s.mode,
-                terminated=False,
-            )
-
-    if best is None:
+        path_nodes.append(nxt)
+        node = nxt
+    if not ok:
+        # Current partial shouldn't be unreachable; fail safe.
         return None
 
-    healed = ByteBeamState([best], current.params)
-    return healed
+    # Determine how far we allow backing off
+    L = len(P)
+    min_k = max(0, L - (max_backoff or L))
+
+    # Try backing off within P: k = L, L-1, ..., min_k
+    for k in range(L, min_k - 1, -1):
+        anc_node = path_nodes[k]
+
+        # We can only commit a token if there is an EOT from this ancestor
+        eot_node = children[anc_node].get(trie.eot_token)
+        if eot_node is None:
+            if verbose:
+                print(f"[heal] k={k}: no EOT at prefix {repr(bytes(P[:k]))}")
+            continue
+
+        # Commit token at P[:k] under the old mass
+        token_id = int(trie.leaf2token_id[eot_node])
+        w_after_eot = base_weight + (s.mass[eot_node] - s.mass[anc_node])
+
+        # New state after committing token boundary
+        committed = LazyTrieState(
+            lm_state=(s.lm_state << token_id),
+            trie=s.trie,
+            node=trie.root,
+            weight=w_after_eot,
+            mass=None,
+            mode=s.mode,
+            terminated=False,
+        )
+
+        # Materialize new masses for the next token
+        committed = await committed.materialize()
+
+        if verbose:
+            tok_bytes = trie.decode[token_id]
+            print(
+                f"[heal] k={k}: commit token={repr(tok_bytes)}, base→w={w_after_eot:.2f}; replay suffix={repr(bytes(P[k:]))}"
+            )
+
+        # Replay the suffix R = P[k:] under the new mass to reconstruct the same bytes
+        node2 = trie.root
+        weight2 = committed.weight
+        for b in P[k:]:
+            nxt = children[node2].get(b)
+            if nxt is None:
+                # This backoff doesn't permit reconstructing the same bytes under new tokenization
+                node2 = None
+                break
+            weight2 = weight2 + (committed.mass[nxt] - committed.mass[node2])
+            node2 = nxt
+
+        if node2 is None:
+            if verbose:
+                print(f"[heal] k={k}: replay failed (unreachable suffix)")
+            continue
+
+        # Check if next_byte is reachable now
+        if children[node2].get(next_byte) is None:
+            # Not yet extendable; try a deeper backoff
+            if verbose:
+                print(f"[heal] k={k}: next_byte still unreachable; continue")
+            continue
+
+        healed_state = LazyTrieState(
+            lm_state=committed.lm_state,
+            trie=s.trie,
+            node=node2,
+            weight=weight2,
+            mass=committed.mass,
+            mode=s.mode,
+            terminated=False,
+        )
+
+        if verbose:
+            print(f"[heal] SUCCESS at k={k}: will consume {nb_disp} next; new_weight={weight2:.2f}")
+        return ByteBeamState([healed_state], current.params)
+
+    if verbose:
+        print("[heal] FAILED: no valid backoff found")
+    return None
 
 
 def main():
@@ -130,5 +213,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-

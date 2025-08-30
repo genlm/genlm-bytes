@@ -23,12 +23,16 @@ class BeamParams:
         verbose (bool, optional): Whether to print the beam state at each step. Defaults to False
         eos_tokens (list[bytes], optional): List of tokens that should be treated as EOS. When configured,
             EOS tokens will terminate generation when sampled. Defaults to None
+        heal (bool, optional): Whether to enable adaptive token healing. Defaults to True
+        heal_max_backoff (int, optional): Maximum number of bytes to back off when healing. Defaults to None
     """
 
     K: int
     prune_threshold: float = 0.0
     verbose: bool = False
     eos_tokens: list[bytes] = None
+    heal: bool = True
+    heal_max_backoff: int | None = None
 
     def __post_init__(self):
         if self.prune_threshold < 0:
@@ -112,6 +116,14 @@ class ByteBeamState(StatefulByteLM):
                 new_states.append(new_state)
 
         new_state = ByteBeamState(new_states, self.params)
+
+        # If advancing would empty the beam, do adaptive healing if enabled
+        if self.params.heal and len(new_state) == 0:
+            healed = await self._adaptive_heal(a)
+            if healed is not None:
+                if self.params.verbose:
+                    print("[heal] Applied adaptive token healing inside __lshift__")
+                return healed
 
         if self.params.verbose:
             print()
@@ -225,3 +237,121 @@ class ByteBeamState(StatefulByteLM):
     async def cleanup(self):
         """Cleans up resources used by the candidates."""
         await asyncio.gather(*[state.cleanup() for state in self])
+
+    async def _adaptive_heal(self, next_byte: int):
+        """Attempt byte-preserving adaptive token healing across current candidates.
+
+        Returns a new beam advanced by `next_byte` if healing succeeds, else None.
+        """
+        verbose = bool(getattr(self.params, "verbose", False))
+
+        # Try each state in descending weight order
+        for s in self.states:
+            s = await s.materialize()
+
+            trie = s.trie.trie
+            children = trie.children
+
+            P = s.partial  # bytes since last token boundary
+
+            if verbose:
+                try:
+                    nb_disp = repr(bytes([next_byte])) if 0 <= next_byte <= 255 else str(next_byte)
+                except Exception:
+                    nb_disp = str(next_byte)
+                print(
+                    f"[heal] Start: next_byte={nb_disp}, P={repr(bytes(P))}, max_backoff={self.params.heal_max_backoff}"
+                )
+
+            # Base weight at the start of the current token
+            base_weight = s.weight - (s.mass[s.node] - s.mass[trie.root])
+
+            # Build path nodes along P from root
+            path_nodes = [trie.root]
+            node = trie.root
+            ok = True
+            for b in P:
+                nxt = children[node].get(b)
+                if nxt is None:
+                    ok = False
+                    break
+                path_nodes.append(nxt)
+                node = nxt
+            if not ok:
+                continue
+
+            L = len(P)
+            max_bk = self.params.heal_max_backoff
+            min_k = max(0, L - (max_bk if max_bk is not None else L))
+
+            for k in range(L, min_k - 1, -1):
+                anc_node = path_nodes[k]
+
+                # Require EOT at this ancestor to commit token
+                eot_node = children[anc_node].get(trie.eot_token)
+                if eot_node is None:
+                    if verbose:
+                        print(f"[heal] k={k}: no EOT at prefix {repr(bytes(P[:k]))}")
+                    continue
+
+                token_id = int(trie.leaf2token_id[eot_node])
+                w_after_eot = base_weight + (s.mass[eot_node] - s.mass[anc_node])
+
+                # Commit token and materialize new masses
+                committed = LazyTrieState(
+                    lm_state=(s.lm_state << token_id),
+                    trie=s.trie,
+                    node=trie.root,
+                    weight=w_after_eot,
+                    mass=None,
+                    mode=s.mode,
+                    terminated=False,
+                )
+                committed = await committed.materialize()
+
+                if verbose:
+                    tok_bytes = trie.decode[token_id]
+                    print(
+                        f"[heal] k={k}: commit token={repr(tok_bytes)}, base→w={w_after_eot:.2f}; replay suffix={repr(bytes(P[k:]))}"
+                    )
+
+                # Replay suffix under new masses
+                node2 = trie.root
+                weight2 = committed.weight
+                for b in P[k:]:
+                    nxt = children[node2].get(b)
+                    if nxt is None:
+                        node2 = None
+                        break
+                    weight2 = weight2 + (committed.mass[nxt] - committed.mass[node2])
+                    node2 = nxt
+                if node2 is None:
+                    if verbose:
+                        print(f"[heal] k={k}: replay failed (unreachable suffix)")
+                    continue
+
+                # Ensure next_byte is now reachable
+                child = children[node2].get(next_byte)
+                if child is None:
+                    if verbose:
+                        print(f"[heal] k={k}: next_byte still unreachable; continue")
+                    continue
+
+                # Advance by next_byte (without recursion)
+                weight3 = weight2 + (committed.mass[child] - committed.mass[node2])
+                healed_state = LazyTrieState(
+                    lm_state=committed.lm_state,
+                    trie=s.trie,
+                    node=child,
+                    weight=weight3,
+                    mass=committed.mass,
+                    mode=s.mode,
+                    terminated=(next_byte == 257),
+                )
+                if verbose:
+                    print(f"[heal] SUCCESS at k={k}: will consume {nb_disp} next; new_weight={weight3:.2f}")
+                return ByteBeamState([healed_state], self.params)
+
+        if verbose:
+            print("[heal] FAILED: no valid backoff found")
+        return None
