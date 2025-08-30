@@ -33,6 +33,9 @@ class BeamParams:
     eos_tokens: list[bytes] = None
     heal: bool = True
     heal_max_backoff: int | None = None
+    # When true, ensure that every canonical tokenization (per BPE canonicality)
+    # remains on the beam even if it would be pruned by K/threshold.
+    keep_all_canonical: bool = False
 
     def __post_init__(self):
         if self.prune_threshold < 0:
@@ -43,6 +46,8 @@ class BeamParams:
             np.log(self.prune_threshold) if self.prune_threshold > 0 else -np.inf
         )
         self.eos_tokens = set(self.eos_tokens) if self.eos_tokens else {}
+        # Placeholder for optional canonicality helper (populated in ByteBeamState.initial)
+        self._canonical_filter = None
 
 
 class ByteBeamState(StatefulByteLM):
@@ -81,6 +86,27 @@ class ByteBeamState(StatefulByteLM):
             get_byte_vocab(llm.tokenizer), **trie_opts
         )
         state = LazyTrieState.initial(llm, async_trie, mode=TrieMode.WITH_EOS)
+        # Optionally prepare a canonicality filter using genlm-control if requested
+        if getattr(params, "keep_all_canonical", False):
+            try:
+                # Import locally to avoid a hard dependency at install time
+                from genlm.control.potential.built_in.canonical import (
+                    FastCanonicalityFilterBPE,
+                )
+
+                filt = FastCanonicalityFilterBPE.from_tokenizer(llm.tokenizer)
+                # Best-effort overrides for some tokenizers (e.g., GPT‑2)
+                try:  # pragma: no cover - depends on tokenizer
+                    name = getattr(llm.tokenizer, "name_or_path", None)
+                    if name:
+                        filt.set_overrides(name)
+                except Exception:
+                    pass
+                params._canonical_filter = filt
+            except Exception as e:  # pragma: no cover - optional feature path
+                raise RuntimeError(
+                    "keep_all_canonical=True requires genlm-control's canonical module."
+                ) from e
         return cls([await state.materialize()], params)
 
     def __iter__(self):
@@ -121,12 +147,13 @@ class ByteBeamState(StatefulByteLM):
         if self.params.heal and len(new_state) == 0:
             healed = await self._adaptive_heal(a)
             if healed is not None:
-                if self.params.verbose:
+                if self.params.verbose:  # pragma: no cover - diagnostics only
                     print("[heal] Applied adaptive token healing inside __lshift__")
                 return healed
 
         if self.params.verbose:
             print()
+            print(f"[beam] size={len(new_state)} (K={self.params.K})")
             print(new_state)
 
         return new_state
@@ -184,12 +211,79 @@ class ByteBeamState(StatefulByteLM):
         Returns:
             (ByteBeamState): New state with pruned candidates.
         """
+        # Standard K/threshold pruning
         new_states = [
             state
             for state in self
             if state.weight - self.logZ > self.params.log_prune_threshold
         ][: self.params.K]
+        # Optionally union with all canonical tokenizations so far
+        if getattr(self.params, "keep_all_canonical", False) and getattr(
+            self.params, "_canonical_filter", None
+        ) is not None:
+            canonicals = []
+            seen = set()
+
+            def key_of(s):
+                # Uniqueness by (context, node) pair
+                return (tuple(s.lm_state.context), int(s.node))
+
+            for s in self.states:
+                if self._is_canonical_state(s):
+                    k = key_of(s)
+                    if k not in seen:
+                        seen.add(k)
+                        canonicals.append(s)
+
+            # Merge and deduplicate with the pruned set
+            merged = []
+            seen = set()
+            for s in new_states + canonicals:
+                k = key_of(s)
+                if k not in seen:
+                    seen.add(k)
+                    merged.append(s)
+            return ByteBeamState(merged, self.params)
+
         return ByteBeamState(new_states, self.params)
+
+    def _is_canonical_state(self, s):
+        """Check if a state's completed tokenization is canonical.
+
+        Uses the optional canonicality filter from genlm-control to verify that
+        each adjacent pair of completed tokens is allowed under canonical BPE
+        segmentation. Only considers completed tokens (i.e., those already
+        committed to `lm_state.context`).
+        """
+        filt = getattr(self.params, "_canonical_filter", None)
+        if filt is None:
+            return False
+
+        try:
+            decode = s.trie.trie.decode
+            bos_id = getattr(s.lm_state.model.tokenizer, "bos_token_id", None)
+            # Map context token IDs to their byte strings; drop BOS if present
+            ids = [t for t in s.lm_state.context if bos_id is None or t != bos_id]
+            toks = [decode[t] for t in ids if t is not None]
+
+            # Sequences with 0/1 tokens are trivially canonical
+            if len(toks) <= 1:
+                return True
+
+            for i in range(1, len(toks)):
+                left = toks[i - 1]
+                right = toks[i]
+                # If tokens are not in the encoding table, skip strict checking
+                if left not in filt._encode or right not in filt._encode:
+                    continue
+                mask = filt((None, left))
+                rid = filt._encode[right]
+                if not bool(mask[rid]):
+                    return False
+            return True
+        except Exception:
+            # Be conservative: if we cannot check, do not force-include
+            return False
 
     def __repr__(self):
         desc = colors.bold % f"Z: {self.logZ}\n" + colors.bold % "Candidates:\n"
@@ -254,7 +348,7 @@ class ByteBeamState(StatefulByteLM):
 
             P = s.partial  # bytes since last token boundary
 
-            if verbose:
+            if verbose:  # pragma: no cover - diagnostics only
                 try:
                     nb_disp = repr(bytes([next_byte])) if 0 <= next_byte <= 255 else str(next_byte)
                 except Exception:
@@ -291,7 +385,7 @@ class ByteBeamState(StatefulByteLM):
                 anc_node = path_nodes[k]
                 eot_node = children[anc_node].get(trie.eot_token)
                 if eot_node is None:
-                    if verbose:
+                    if verbose:  # pragma: no cover - diagnostics only
                         print(f"[heal] k={k}: no EOT at prefix {repr(bytes(P[:k]))}")
                     continue
 
@@ -305,13 +399,13 @@ class ByteBeamState(StatefulByteLM):
                         break
                     node2 = nxt
                 if not suffix_ok:
-                    if verbose:
+                    if verbose:  # pragma: no cover - diagnostics only
                         print(f"[heal] k={k}: replay failed structurally (unreachable suffix)")
                     continue
 
                 # Check next_byte structurally
                 if children[node2].get(next_byte) is None:
-                    if verbose:
+                    if verbose:  # pragma: no cover - diagnostics only
                         print(f"[heal] k={k}: next_byte unreachable structurally; continue")
                     continue
 
@@ -339,7 +433,7 @@ class ByteBeamState(StatefulByteLM):
             )
             committed = await committed.materialize()
 
-            if verbose:
+            if verbose:  # pragma: no cover - diagnostics only
                 tok_bytes = trie.decode[token_id]
                 print(
                     f"[heal] k={chosen_k}: commit token={repr(tok_bytes)}, base→w={w_after_eot:.2f}; replay suffix={repr(bytes(P[chosen_k:]))}"
@@ -365,10 +459,10 @@ class ByteBeamState(StatefulByteLM):
                 mode=s.mode,
                 terminated=(next_byte == 257),
             )
-            if verbose:
+            if verbose:  # pragma: no cover - diagnostics only
                 print(f"[heal] SUCCESS at k={chosen_k}: will consume {nb_disp} next; new_weight={weight3:.2f}")
             return ByteBeamState([healed_state], self.params)
 
-        if verbose:
+        if verbose:  # pragma: no cover - diagnostics only
             print("[heal] FAILED: no valid backoff found")
         return None
