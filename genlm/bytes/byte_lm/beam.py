@@ -284,73 +284,91 @@ class ByteBeamState(StatefulByteLM):
             max_bk = self.params.heal_max_backoff
             min_k = max(0, L - (max_bk if max_bk is not None else L))
 
+            # Structural precheck: find nearest k with EOT at P[:k], suffix P[k:] reachable from root,
+            # and next_byte reachable from node(P[k:]). No LM calls here.
+            chosen_k = None
+            chosen_suffix_path = None  # list of nodes along suffix replay (optional)
             for k in range(L, min_k - 1, -1):
                 anc_node = path_nodes[k]
-
-                # Require EOT at this ancestor to commit token
                 eot_node = children[anc_node].get(trie.eot_token)
                 if eot_node is None:
                     if verbose:
                         print(f"[heal] k={k}: no EOT at prefix {repr(bytes(P[:k]))}")
                     continue
 
-                token_id = int(trie.leaf2token_id[eot_node])
-                w_after_eot = base_weight + (s.mass[eot_node] - s.mass[anc_node])
-
-                # Commit token and materialize new masses
-                committed = LazyTrieState(
-                    lm_state=(s.lm_state << token_id),
-                    trie=s.trie,
-                    node=trie.root,
-                    weight=w_after_eot,
-                    mass=None,
-                    mode=s.mode,
-                    terminated=False,
-                )
-                committed = await committed.materialize()
-
-                if verbose:
-                    tok_bytes = trie.decode[token_id]
-                    print(
-                        f"[heal] k={k}: commit token={repr(tok_bytes)}, base→w={w_after_eot:.2f}; replay suffix={repr(bytes(P[k:]))}"
-                    )
-
-                # Replay suffix under new masses
+                # Try to follow suffix structurally from root
                 node2 = trie.root
-                weight2 = committed.weight
+                suffix_ok = True
                 for b in P[k:]:
                     nxt = children[node2].get(b)
                     if nxt is None:
-                        node2 = None
+                        suffix_ok = False
                         break
-                    weight2 = weight2 + (committed.mass[nxt] - committed.mass[node2])
                     node2 = nxt
-                if node2 is None:
+                if not suffix_ok:
                     if verbose:
-                        print(f"[heal] k={k}: replay failed (unreachable suffix)")
+                        print(f"[heal] k={k}: replay failed structurally (unreachable suffix)")
                     continue
 
-                # Ensure next_byte is now reachable
-                child = children[node2].get(next_byte)
-                if child is None:
+                # Check next_byte structurally
+                if children[node2].get(next_byte) is None:
                     if verbose:
-                        print(f"[heal] k={k}: next_byte still unreachable; continue")
+                        print(f"[heal] k={k}: next_byte unreachable structurally; continue")
                     continue
 
-                # Advance by next_byte (without recursion)
-                weight3 = weight2 + (committed.mass[child] - committed.mass[node2])
-                healed_state = LazyTrieState(
-                    lm_state=committed.lm_state,
-                    trie=s.trie,
-                    node=child,
-                    weight=weight3,
-                    mass=committed.mass,
-                    mode=s.mode,
-                    terminated=(next_byte == 257),
+                chosen_k = k
+                break
+
+            if chosen_k is None:
+                # No structurally valid backoff for this state
+                continue
+
+            # Now do exactly one materialize for the chosen_k
+            anc_node = path_nodes[chosen_k]
+            eot_node = children[anc_node].get(trie.eot_token)
+            token_id = int(trie.leaf2token_id[eot_node])
+            w_after_eot = base_weight + (s.mass[eot_node] - s.mass[anc_node])
+
+            committed = LazyTrieState(
+                lm_state=(s.lm_state << token_id),
+                trie=s.trie,
+                node=trie.root,
+                weight=w_after_eot,
+                mass=None,
+                mode=s.mode,
+                terminated=False,
+            )
+            committed = await committed.materialize()
+
+            if verbose:
+                tok_bytes = trie.decode[token_id]
+                print(
+                    f"[heal] k={chosen_k}: commit token={repr(tok_bytes)}, base→w={w_after_eot:.2f}; replay suffix={repr(bytes(P[chosen_k:]))}"
                 )
-                if verbose:
-                    print(f"[heal] SUCCESS at k={k}: will consume {nb_disp} next; new_weight={weight3:.2f}")
-                return ByteBeamState([healed_state], self.params)
+
+            # Replay suffix under new masses to get the exact weight
+            node2 = trie.root
+            weight2 = committed.weight
+            for b in P[chosen_k:]:
+                nxt = children[node2].get(b)
+                weight2 = weight2 + (committed.mass[nxt] - committed.mass[node2])
+                node2 = nxt
+
+            # Advance by next_byte (without recursion)
+            child = children[node2].get(next_byte)
+            weight3 = weight2 + (committed.mass[child] - committed.mass[node2])
+            healed_state = LazyTrieState(
+                lm_state=committed.lm_state,
+                trie=s.trie,
+                node=child,
+                weight=weight3,
+                mass=committed.mass,
+                mode=s.mode,
+                terminated=(next_byte == 257),
+            )
+            if verbose:
+                print(f"[heal] SUCCESS at k={chosen_k}: will consume {nb_disp} next; new_weight={weight3:.2f}")
+            return ByteBeamState([healed_state], self.params)
 
         if verbose:
             print("[heal] FAILED: no valid backoff found")

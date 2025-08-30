@@ -60,7 +60,8 @@ async def test_heal_enabled_succeeds(llm):
 @pytest.mark.asyncio
 async def test_heal_max_backoff_zero_fails(llm):
     # With zero backoff, we cannot move the boundary; expect failure similar to heal=False
-    ok, fail_idx, _ = await _advance_bytes(llm, TEXT, heal=True, heal_max_backoff=2)
+    ok, fail_idx, _ = await _advance_bytes(
+        llm, TEXT, heal=True, heal_max_backoff=2
+    )
     assert not ok, "Expected failure with heal_max_backoff=2"
     assert isinstance(fail_idx, int)
-
