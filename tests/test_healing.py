@@ -23,7 +23,7 @@ async def _advance_bytes(llm, text: str, heal: bool, heal_max_backoff=None):
             eos_tokens=[eos_token],
             heal=heal,
             heal_max_backoff=heal_max_backoff,
-            verbose=False,
+            verbose=True,
         ),
     )
     try:
@@ -35,8 +35,7 @@ async def _advance_bytes(llm, text: str, heal: bool, heal_max_backoff=None):
                 return False, idx, current
             current = next_beam
 
-        # Completed full prefix; EOS should be reachable when heal succeeds
-        logp_next_all = await current.logp_next()
+        # Completed full prefix; tests will check EOS reachability on returned state
         return True, None, current
     finally:
         await beam.cleanup()

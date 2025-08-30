@@ -287,7 +287,6 @@ class ByteBeamState(StatefulByteLM):
             # Structural precheck: find nearest k with EOT at P[:k], suffix P[k:] reachable from root,
             # and next_byte reachable from node(P[k:]). No LM calls here.
             chosen_k = None
-            chosen_suffix_path = None  # list of nodes along suffix replay (optional)
             for k in range(L, min_k - 1, -1):
                 anc_node = path_nodes[k]
                 eot_node = children[anc_node].get(trie.eot_token)
