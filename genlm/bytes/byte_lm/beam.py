@@ -33,6 +33,13 @@ class BeamParams:
     eos_tokens: list[bytes] = None
     heal: bool = True
     heal_max_backoff: int | None = None
+    # Enable multi-split healing: after moving the boundary once, allow
+    # committing multiple tokens inside the current partial (structurally
+    # planned; LM materialized only at commit points).
+    heal_multi_split: bool = True
+    # Optional cap on how many intra-partial commits are allowed during a
+    # single healing attempt. None means unlimited.
+    heal_max_splits: int | None = None
 
     def __post_init__(self):
         if self.prune_threshold < 0:
@@ -284,9 +291,75 @@ class ByteBeamState(StatefulByteLM):
             max_bk = self.params.heal_max_backoff
             min_k = max(0, L - (max_bk if max_bk is not None else L))
 
-            # Structural precheck: find nearest k with EOT at P[:k], suffix P[k:] reachable from root,
-            # and next_byte reachable from node(P[k:]). No LM calls here.
+            # Helper: plan multi-split commits inside suffix S so that after
+            # consuming S we can consume next_byte structurally. Returns list of
+            # commit positions (relative to S start), or None if impossible
+            def _plan_commits(S: bytes) -> list[int] | None:
+                # Returns strictly increasing absolute positions within S at which to commit EOT.
+                commits: list[int] = []
+                if len(S) == 0:
+                    return commits if children[trie.root].get(next_byte) is not None else None
+
+                seg_start = 0
+                node2 = trie.root
+                last_eot_in_seg: int | None = None  # relative to seg_start
+
+                # Phase 1: make S structurally reachable by greedy longest-match with commits at last EOT when stuck.
+                i = seg_start
+                while i < len(S):
+                    nxt = children[node2].get(S[i])
+                    if nxt is not None:
+                        node2 = nxt
+                        i += 1
+                        if children[node2].get(trie.eot_token) is not None:
+                            last_eot_in_seg = i - seg_start
+                    else:
+                        if last_eot_in_seg is None:
+                            return None
+                        if self.params.heal_max_splits is not None and len(commits) >= self.params.heal_max_splits:
+                            return None
+                        # Commit at the last EOT within this segment and restart next segment
+                        abs_pos = seg_start + last_eot_in_seg
+                        commits.append(abs_pos)
+                        seg_start = abs_pos
+                        node2 = trie.root
+                        last_eot_in_seg = None
+                        i = seg_start
+
+                # At end of S, node2 is the node after consuming the tail segment.
+                # Phase 2: ensure next_byte is reachable. If not, iteratively commit the last EOT of the current tail segment.
+                while children[node2].get(next_byte) is None:
+                    # Find last EOT in the current tail segment [seg_start:len(S))
+                    n = trie.root
+                    last_e = None
+                    for j in range(seg_start, len(S)):
+                        nxt = children[n].get(S[j])
+                        if nxt is None:
+                            break
+                        n = nxt
+                        if children[n].get(trie.eot_token) is not None:
+                            last_e = j + 1  # absolute position
+                    if last_e is None:
+                        return None
+                    if self.params.heal_max_splits is not None and len(commits) >= self.params.heal_max_splits:
+                        return None
+                    commits.append(last_e)
+                    seg_start = last_e
+                    # Replay the new tail segment head to get node2
+                    n = trie.root
+                    for j in range(seg_start, len(S)):
+                        nxt = children[n].get(S[j])
+                        if nxt is None:
+                            break
+                        n = nxt
+                    node2 = n
+
+                return commits
+
             chosen_k = None
+            commit_plan: list[int] | None = None
+
+            # Single-split quick path
             for k in range(L, min_k - 1, -1):
                 anc_node = path_nodes[k]
                 eot_node = children[anc_node].get(trie.eot_token)
@@ -294,8 +367,6 @@ class ByteBeamState(StatefulByteLM):
                     if verbose:
                         print(f"[heal] k={k}: no EOT at prefix {repr(bytes(P[:k]))}")
                     continue
-
-                # Try to follow suffix structurally from root
                 node2 = trie.root
                 suffix_ok = True
                 for b in P[k:]:
@@ -308,15 +379,31 @@ class ByteBeamState(StatefulByteLM):
                     if verbose:
                         print(f"[heal] k={k}: replay failed structurally (unreachable suffix)")
                     continue
-
-                # Check next_byte structurally
                 if children[node2].get(next_byte) is None:
                     if verbose:
                         print(f"[heal] k={k}: next_byte unreachable structurally; continue")
                     continue
-
                 chosen_k = k
+                commit_plan = []
                 break
+
+            # Multi-split plan if enabled and no single-split
+            if chosen_k is None and getattr(self.params, "heal_multi_split", False):
+                for k in range(L, min_k - 1, -1):
+                    anc_node = path_nodes[k]
+                    eot_node = children[anc_node].get(trie.eot_token)
+                    if eot_node is None:
+                        if verbose:
+                            print(f"[heal] k={k}: no EOT at prefix {repr(bytes(P[:k]))}")
+                        continue
+                    plan = _plan_commits(bytes(P[k:]))
+                    if plan is None:
+                        if verbose:
+                            print(f"[heal] k={k}: no multi-split plan found")
+                        continue
+                    chosen_k = k
+                    commit_plan = plan
+                    break
 
             if chosen_k is None:
                 # No structurally valid backoff for this state
@@ -342,18 +429,54 @@ class ByteBeamState(StatefulByteLM):
             if verbose:
                 tok_bytes = trie.decode[token_id]
                 print(
-                    f"[heal] k={chosen_k}: commit token={repr(tok_bytes)}, base→w={w_after_eot:.2f}; replay suffix={repr(bytes(P[chosen_k:]))}"
+                    f"[heal] k={chosen_k}: commit token={repr(tok_bytes)}, base→w={w_after_eot:.2f}; plan commits at {commit_plan}; suffix={repr(bytes(P[chosen_k:]))}"
                 )
 
-            # Replay suffix under new masses to get the exact weight
+            # Replay suffix with optional multi-split commits under new masses to get the exact weight
             node2 = trie.root
             weight2 = committed.weight
-            for b in P[chosen_k:]:
-                nxt = children[node2].get(b)
-                weight2 = weight2 + (committed.mass[nxt] - committed.mass[node2])
-                node2 = nxt
 
-            # Advance by next_byte (without recursion)
+            S = list(P[chosen_k:])
+            plan_positions = commit_plan or []
+            last = 0
+            # Helper to follow bytes [i:j) under current committed.mass and update (node2, weight2)
+            def _follow_span(i: int, j: int):
+                nonlocal node2, weight2
+                for bb in S[i:j]:
+                    nxt = children[node2].get(bb)
+                    weight2 = weight2 + (committed.mass[nxt] - committed.mass[node2])
+                    node2 = nxt
+
+            for cp in plan_positions:
+                _follow_span(last, cp)
+                # Commit EOT at node2
+                eot_n = children[node2].get(trie.eot_token)
+                if eot_n is None:  # Defensive: plan should only include valid EOT points
+                    if verbose:
+                        print(f"[heal] plan invalid at {cp}: no EOT at node; abort healing for this state")
+                    return None
+                tok_id = int(trie.leaf2token_id[eot_n])
+                weight2 = weight2 + (committed.mass[eot_n] - committed.mass[node2])
+                # Advance LM and materialize new masses
+                committed = LazyTrieState(
+                    lm_state=(committed.lm_state << tok_id),
+                    trie=s.trie,
+                    node=trie.root,
+                    weight=weight2,
+                    mass=None,
+                    mode=s.mode,
+                    terminated=False,
+                )
+                committed = await committed.materialize()
+                if verbose:
+                    print(f"[heal] commit@{cp}: token={repr(trie.decode[tok_id])}, new_w={weight2:.2f}")
+                # Reset traversal under updated masses
+                node2 = trie.root
+                last = cp
+
+            # Follow remaining residual
+            _follow_span(last, len(S))
+            # Advance by next_byte under current committed.mass
             child = children[node2].get(next_byte)
             weight3 = weight2 + (committed.mass[child] - committed.mass[node2])
             healed_state = LazyTrieState(

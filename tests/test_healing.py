@@ -64,3 +64,17 @@ async def test_heal_max_backoff_zero_fails(llm):
     )
     assert not ok, "Expected failure with heal_max_backoff=2"
     assert isinstance(fail_idx, int)
+
+
+@pytest.mark.asyncio
+async def test_heal_multisplit(llm):
+    # This case previously required multi-split healing around "Valkyria".
+    VALKYRIA = (
+        "= Valkyria Chronicles III =Senjō no Valkyria 3 : Unrecorded Chronicles ( Japanese : 戦場のヴァルキュリア3 , li"
+    )
+    ok, _, state = await _advance_bytes(llm, VALKYRIA, heal=True, heal_max_backoff=None)
+    assert ok, "Healing enabled should complete the full Valkyria prefix"
+    logp_next_all = await state.logp_next()
+    assert (
+        logp_next_all[257] > -np.inf
+    ), "EOS should be reachable after completing Valkyria prefix"
