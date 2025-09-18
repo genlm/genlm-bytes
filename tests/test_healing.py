@@ -3,6 +3,8 @@ import numpy as np
 
 from genlm.backend import load_model_by_name
 from genlm.bytes import ByteBeamState, BeamParams
+from genlm.bytes.trie import TokenByteTrie
+from genlm.bytes.byte_lm.trie_state import TrieMode
 
 
 TEXT = \
@@ -78,3 +80,76 @@ async def test_heal_multisplit(llm):
     assert (
         logp_next_all[257] > -np.inf
     ), "EOS should be reachable after completing Valkyria prefix"
+
+
+# -------------------------
+# Targeted coverage for beam.py
+# -------------------------
+
+
+def _beam_min():
+    # Minimal beam just to access internal helpers
+    return ByteBeamState(states=[], params=BeamParams(K=1))
+
+
+def test_plan_commits_empty_suffix():
+    trie = TokenByteTrie(decode=[b"a", b"b"])  # root children: 'a', 'b'
+    beam = _beam_min()
+
+    # S empty, next_byte reachable at root
+    plan = beam._plan_commits(trie, b"", ord("a"), heal_max_splits=None)
+    assert plan == []
+
+    # S empty, next_byte unreachable at root
+    plan = beam._plan_commits(trie, b"", ord("z"), heal_max_splits=None)
+    assert plan is None
+
+
+def test_plan_commits_no_last_eot():
+    # No token ends at 'a' or 'ab' => no EOT inside the segment 'ab'
+    trie = TokenByteTrie(decode=[b"abc", b"abx"])  # missing 'ab'
+    beam = _beam_min()
+
+    plan = beam._plan_commits(trie, b"abz", ord("z"), heal_max_splits=None)
+    assert plan is None
+
+
+def test_plan_commits_heal_max_splits():
+    # 'ab' exists, so last_eot_in_seg=2, but splits are disallowed
+    trie = TokenByteTrie(decode=[b"ab", b"abc"])  # EOT at 'ab'
+    beam = _beam_min()
+
+    plan = beam._plan_commits(trie, b"abz", ord("z"), heal_max_splits=0)
+    assert plan is None
+
+
+def test_plan_commits_until_reachable():
+    # After consuming S='a', to produce next_byte 'b' we must commit at 'a'
+    trie = TokenByteTrie(decode=[b"a", b"aa", b"b"])  # EOT at 'a'; 'b' only from root
+    beam = _beam_min()
+
+    plan = beam._plan_commits(trie, b"a", ord("b"), heal_max_splits=None)
+    assert plan == [1]
+
+
+@pytest.mark.asyncio
+async def test_prefill_and_prune_real_llm(llm):
+    # Real ByteBeamState interaction without fakes
+    state = await ByteBeamState.initial(llm, BeamParams(K=3))
+    try:
+        prefilled = await state.prefill(b"Hello ")
+        assert len(prefilled.states) > 0
+
+        pruned = prefilled.prune()
+        assert isinstance(pruned, ByteBeamState)
+        assert len(pruned.states) <= 3
+    finally:
+        await state.cleanup()
+
+
+def test_plan_commits_no_last_eot():
+    # Only token 'abc', S='ab' has no EOT inside tail, next byte unreachable => None
+    trie = TokenByteTrie(decode=[b"abc"])  # Only full token at 'abc'
+    beam = _beam_min()
+    plan = beam._plan_commits(trie, b"ab", ord("z"), heal_max_splits=None)
+    assert plan is None
