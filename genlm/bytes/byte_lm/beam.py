@@ -260,7 +260,11 @@ class ByteBeamState(StatefulByteLM):
 
             if verbose:
                 try:
-                    nb_disp = repr(bytes([next_byte])) if 0 <= next_byte <= 255 else str(next_byte)
+                    nb_disp = (
+                        repr(bytes([next_byte]))
+                        if 0 <= next_byte <= 255
+                        else str(next_byte)
+                    )
                 except Exception:
                     nb_disp = str(next_byte)
                 print(
@@ -302,10 +306,14 @@ class ByteBeamState(StatefulByteLM):
                     if verbose:
                         print(f"[heal] k={k}: no EOT at prefix {repr(bytes(P[:k]))}")
                     continue
-                plan = self._plan_commits(trie, bytes(P[k:]), next_byte, self.params.heal_max_splits)
+                plan = self._plan_commits(
+                    trie, bytes(P[k:]), next_byte, self.params.heal_max_splits
+                )
                 if plan is None:
                     if verbose:
-                        print(f"[heal] k={k}: no plan found (unreachable suffix or next_byte)")
+                        print(
+                            f"[heal] k={k}: no plan found (unreachable suffix or next_byte)"
+                        )
                     continue
                 chosen_k = k
                 commit_plan = plan
@@ -454,6 +462,7 @@ class ByteBeamState(StatefulByteLM):
 
         S = list(P[chosen_k:])
         last = 0
+
         # Helper to follow bytes [i:j) under current committed.mass and update (node2, weight2)
         def _follow_span(i: int, j: int):
             nonlocal node2, weight2
@@ -468,7 +477,9 @@ class ByteBeamState(StatefulByteLM):
             eot_n = children[node2].get(trie.eot_token)
             if eot_n is None:  # Defensive: plan should only include valid EOT points
                 if verbose:  # pragma: no cover - diagnostics only
-                    print(f"[heal] plan invalid at {cp}: no EOT at node; abort healing for this state")
+                    print(
+                        f"[heal] plan invalid at {cp}: no EOT at node; abort healing for this state"
+                    )
                 return None
             tok_id = int(trie.leaf2token_id[eot_n])
             weight2 = weight2 + (committed.mass[eot_n] - committed.mass[node2])
@@ -484,7 +495,9 @@ class ByteBeamState(StatefulByteLM):
             )
             committed = await committed.materialize()
             if verbose:  # pragma: no cover - diagnostics only
-                print(f"[heal] commit@{cp}: token={repr(trie.decode[tok_id])}, new_w={weight2:.2f}")
+                print(
+                    f"[heal] commit@{cp}: token={repr(trie.decode[tok_id])}, new_w={weight2:.2f}"
+                )
             # Reset traversal under updated masses
             node2 = trie.root
             last = cp
@@ -505,8 +518,14 @@ class ByteBeamState(StatefulByteLM):
         )
         if verbose:  # pragma: no cover - diagnostics only
             try:
-                nb_disp = repr(bytes([next_byte])) if 0 <= next_byte <= 255 else str(next_byte)
+                nb_disp = (
+                    repr(bytes([next_byte]))
+                    if 0 <= next_byte <= 255
+                    else str(next_byte)
+                )
             except Exception:
                 nb_disp = str(next_byte)
-            print(f"[heal] SUCCESS at k={chosen_k}: will consume {nb_disp} next; new_weight={weight3:.2f}")
+            print(
+                f"[heal] SUCCESS at k={chosen_k}: will consume {nb_disp} next; new_weight={weight3:.2f}"
+            )
         return ByteBeamState([healed_state], self.params)

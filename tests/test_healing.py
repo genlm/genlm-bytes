@@ -7,8 +7,7 @@ from genlm.bytes.trie import TokenByteTrie
 from genlm.bytes.byte_lm.trie_state import TrieMode
 
 
-TEXT = \
-    ". Boulter starred in the 2011 film Mercenaries directed by Paris Leonti ."
+TEXT = ". Boulter starred in the 2011 film Mercenaries directed by Paris Leonti ."
 
 
 @pytest.fixture(scope="module")
@@ -46,7 +45,9 @@ async def _advance_bytes(llm, text: str, heal: bool, heal_max_backoff=None):
 @pytest.mark.asyncio
 async def test_heal_disabled_k1_fails(llm):
     ok, fail_idx, _ = await _advance_bytes(llm, TEXT, heal=False)
-    assert not ok, "Expected empty beam with heal disabled (K=1), but completed successfully"
+    assert not ok, (
+        "Expected empty beam with heal disabled (K=1), but completed successfully"
+    )
     assert isinstance(fail_idx, int)
 
 
@@ -61,9 +62,7 @@ async def test_heal_enabled_succeeds(llm):
 @pytest.mark.asyncio
 async def test_heal_max_backoff_zero_fails(llm):
     # With zero backoff, we cannot move the boundary; expect failure similar to heal=False
-    ok, fail_idx, _ = await _advance_bytes(
-        llm, TEXT, heal=True, heal_max_backoff=2
-    )
+    ok, fail_idx, _ = await _advance_bytes(llm, TEXT, heal=True, heal_max_backoff=2)
     assert not ok, "Expected failure with heal_max_backoff=2"
     assert isinstance(fail_idx, int)
 
@@ -71,15 +70,13 @@ async def test_heal_max_backoff_zero_fails(llm):
 @pytest.mark.asyncio
 async def test_heal_multisplit(llm):
     # This case previously required multi-split healing around "Valkyria".
-    VALKYRIA = (
-        "= Valkyria Chronicles III =Senjō no Valkyria 3 : Unrecorded Chronicles ( Japanese : 戦場のヴァルキュリア3 , li"
-    )
+    VALKYRIA = "= Valkyria Chronicles III =Senjō no Valkyria 3 : Unrecorded Chronicles ( Japanese : 戦場のヴァルキュリア3 , li"
     ok, _, state = await _advance_bytes(llm, VALKYRIA, heal=True, heal_max_backoff=None)
     assert ok, "Healing enabled should complete the full Valkyria prefix"
     logp_next_all = await state.logp_next()
-    assert (
-        logp_next_all[257] > -np.inf
-    ), "EOS should be reachable after completing Valkyria prefix"
+    assert logp_next_all[257] > -np.inf, (
+        "EOS should be reachable after completing Valkyria prefix"
+    )
 
 
 # -------------------------
