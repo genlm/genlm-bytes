@@ -4,7 +4,6 @@ import numpy as np
 from genlm.backend import load_model_by_name
 from genlm.bytes import ByteBeamState, BeamParams
 from genlm.bytes.trie import TokenByteTrie
-from genlm.bytes.byte_lm.trie_state import TrieMode
 
 
 TEXT = ". Boulter starred in the 2011 film Mercenaries directed by Paris Leonti ."
@@ -144,7 +143,7 @@ async def test_prefill_and_prune_real_llm(llm):
         await state.cleanup()
 
 
-def test_plan_commits_no_last_eot():
+def test_plan_commits_tail_no_eot():
     # Only token 'abc', S='ab' has no EOT inside tail, next byte unreachable => None
     trie = TokenByteTrie(decode=[b"abc"])  # Only full token at 'abc'
     beam = _beam_min()
