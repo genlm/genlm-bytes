@@ -1,9 +1,11 @@
 import pytest
 import numpy as np
+from types import SimpleNamespace
 
 from genlm.backend import load_model_by_name
 from genlm.bytes import ByteBeamState, BeamParams
 from genlm.bytes.trie import TokenByteTrie
+import genlm.bytes.byte_lm.beam as beam_module
 
 
 TEXT = ". Boulter starred in the 2011 film Mercenaries directed by Paris Leonti ."
@@ -88,6 +90,25 @@ def _beam_min():
     return ByteBeamState(states=[], params=BeamParams(K=1))
 
 
+def _make_wrapped_trie(children, decode=None, leaf2token_id=None, root=0, eot_token=None):
+    inner = SimpleNamespace(
+        children=children,
+        root=root,
+        eot_token=eot_token,
+        leaf2token_id=leaf2token_id or {},
+        decode=decode or [],
+    )
+    return SimpleNamespace(trie=inner)
+
+
+class DummyLMState:
+    def __init__(self, history=None):
+        self.history = tuple(history or ())
+
+    def __lshift__(self, token_id):
+        return DummyLMState(self.history + (token_id,))
+
+
 def test_plan_commits_empty_suffix():
     trie = TokenByteTrie(decode=[b"a", b"b"])  # root children: 'a', 'b'
     beam = _beam_min()
@@ -149,3 +170,154 @@ def test_plan_commits_tail_no_eot():
     beam = _beam_min()
     plan = beam._plan_commits(trie, b"ab", ord("z"), heal_max_splits=None)
     assert plan is None
+
+
+def test_format_byte_handles_type_error():
+    beam = _beam_min()
+
+    class Weird:
+        def __str__(self):
+            return "weird-value"
+
+    assert beam._format_byte(Weird()) == "weird-value"
+
+
+def test_traverse_bytes_failure_returns_none():
+    beam = _beam_min()
+    children = [{1: 1}, {}]
+    assert beam._traverse_bytes(children, eot_token=None, start_node=0, bytes_seq=[1, 2]) == (
+        None,
+        None,
+    )
+
+
+def test_build_path_nodes_invalid_returns_none():
+    beam = _beam_min()
+    children = [{1: 1}, {}]
+    assert beam._build_path_nodes(children, root=0, partial_bytes=[1, 2]) is None
+
+
+@pytest.mark.asyncio
+async def test_adaptive_heal_skips_state_when_partial_path_invalid():
+    class DummyHealingState:
+        def __init__(self):
+            children = [{1: 1}, {}]
+            self.trie = _make_wrapped_trie(
+                children,
+                decode=[b"a"],
+                leaf2token_id={},
+                eot_token=None,
+            )
+            self.weight = 0.0
+            self.node = 0
+            self.mass = np.zeros(len(children))
+            self.partial = [2]  # Missing path so _build_path_nodes -> None
+            self.mode = "with_eos"
+            self.lm_state = DummyLMState()
+
+        async def materialize(self):
+            return self
+
+    beam = ByteBeamState(states=[DummyHealingState()], params=BeamParams(K=1, heal_max_backoff=1))
+    healed = await beam._adaptive_heal(next_byte=1)
+    assert healed is None
+
+
+def test_find_heal_plan_no_plan_verbose():
+    trie = TokenByteTrie(decode=[b"a"], device="cpu")
+    children = trie.children
+    partial_bytes = [ord("a")]
+
+    beam = _beam_min()
+    path_nodes = beam._build_path_nodes(children, trie.root, partial_bytes)
+    chosen_k, plan = beam._find_heal_plan(
+        trie=trie,
+        children=children,
+        path_nodes=path_nodes,
+        partial_bytes=partial_bytes,
+        next_byte=ord("z"),
+        min_k=0,
+        verbose=True,
+    )
+    assert chosen_k is None
+    assert plan is None
+
+
+def test_plan_commits_tail_split_cap_in_phase_two():
+    trie = TokenByteTrie(decode=[b"a", b"b"], device="cpu")
+    beam = _beam_min()
+    plan = beam._plan_commits(trie, b"ab", ord("c"), heal_max_splits=1)
+    assert plan is None
+
+
+def test_plan_commits_replay_failure_returns_none():
+    trie = TokenByteTrie(decode=[b"ab", b"abcd"], device="cpu")
+    beam = _beam_min()
+    plan = beam._plan_commits(trie, b"abc", ord("z"), heal_max_splits=None)
+    assert plan is None
+
+
+@pytest.mark.asyncio
+async def test_apply_commit_plan_invalid_eot_abort(monkeypatch):
+    class FakeLazyTrieState:
+        def __init__(self, lm_state, trie, node, weight, mass, mode, terminated):
+            self.lm_state = lm_state
+            self.trie = trie
+            self.node = node
+            self.weight = weight
+            self.mode = mode
+            self.terminated = terminated
+            self._mass = mass
+
+        @property
+        def mass(self):
+            return self._mass
+
+        @mass.setter
+        def mass(self, value):
+            self._mass = value
+
+        async def materialize(self):
+            if self._mass is None:
+                size = len(self.trie.trie.children)
+                self._mass = np.linspace(0.0, 1.0, size)
+            return self
+
+    monkeypatch.setattr(beam_module, "LazyTrieState", FakeLazyTrieState)
+
+    children = [
+        {None: 3, 7: 1},
+        {8: 2},
+        {},
+        {},
+    ]
+    trie = _make_wrapped_trie(
+        children,
+        decode=[b"T0"],
+        leaf2token_id={3: 0},
+        eot_token=None,
+    )
+    state = FakeLazyTrieState(
+        lm_state=DummyLMState(),
+        trie=trie,
+        node=2,
+        weight=0.0,
+        mass=np.linspace(0.0, 0.3, len(children)),
+        mode="with_eos",
+        terminated=False,
+    )
+
+    beam = _beam_min()
+    result = await beam._apply_commit_plan(
+        state=state,
+        trie=trie.trie,
+        children=children,
+        partial_bytes=[7, 8],
+        chosen_k=0,
+        plan_positions=[1],  # Invalid because there is no EOT at this node
+        next_byte=9,
+        base_weight=0.0,
+        path_nodes=[0, 1, 2],
+        verbose=True,
+    )
+    assert result is None
