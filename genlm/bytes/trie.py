@@ -198,17 +198,22 @@ class TokenByteTrie:
 
         self.node2prefix = node2prefix
 
-    def _build_parent_map(self):
-        """Builds a mapping from each node to its parent node in the trie.
+    def _compute_parent_and_depth(self):
+        """Compute parent pointers and depths for every node in the trie."""
 
-        Returns:
-            (dict): A dictionary where keys are child nodes and values are their parent nodes.
-        """
-        parent = {}
-        for node in range(len(self.children)):
-            for child in self.jump[node]:
+        num_nodes = len(self.children)
+        parent = np.full(num_nodes, -1, dtype=np.int32)
+        depth = np.zeros(num_nodes, dtype=np.int32)
+
+        stack = [self.root]
+        while stack:
+            node = stack.pop()
+            for child in self.children[node].values():
                 parent[child] = node
-        return parent
+                depth[child] = depth[node] + 1
+                stack.append(child)
+
+        return parent, depth
 
     def _build_reachability_matrix(self):
         """Constructs dual sparse reachability matrices for efficient weight propagation.
@@ -220,65 +225,95 @@ class TokenByteTrie:
         For propagate_eos mode, EOS tokens contribute directly to eos_node and root.
         """
         leaf_indices = self.token_id_to_leaf[:, 1]
-        parent = self._build_parent_map()
-        # Build no_eos matrix (includes all tokens, doesn't map any tokens to the eos_node)
-        rows_no_eos, cols_no_eos = [], []
-        # Build with_eos matrix (maps EOS tokens to the eos_node only)
-        rows_with_eos, cols_with_eos = [], []
+        parent, depth = self._compute_parent_and_depth()
 
-        for i, node in enumerate(leaf_indices):
-            token_id = self.token_id_to_leaf[i, 0]
-            token = self.decode[token_id]
+        token_ids = self.token_id_to_leaf[:, 0]
+        leaf_nodes = self.token_id_to_leaf[:, 1]
+        leaf_depths = depth[leaf_nodes]
+        counts_no_eos = leaf_depths + 1  # include the leaf itself
 
-            # self-connection
-            rows_no_eos.append(i)
-            cols_no_eos.append(node)
-            if token not in self.eos_tokens:
-                rows_with_eos.append(i)
-                cols_with_eos.append(node)
+        eos_token_ids = set(self.eos_token_ids)
+        eos_mask = np.array([tok in eos_token_ids for tok in token_ids], dtype=bool)
+        counts_with_eos = counts_no_eos.copy()
+        if eos_token_ids:
+            counts_with_eos[eos_mask] = 2  # eos_node + root
+
+        total_no_eos = int(counts_no_eos.sum())
+        total_with_eos = int(counts_with_eos.sum())
+
+        rows_no_eos = np.empty(total_no_eos, dtype=np.int64)
+        cols_no_eos = np.empty(total_no_eos, dtype=np.int64)
+        rows_with_eos = np.empty(total_with_eos, dtype=np.int64)
+        cols_with_eos = np.empty(total_with_eos, dtype=np.int64)
+
+        offset_no_eos = 0
+        offset_with_eos = 0
+
+        for row_index, (token_id, leaf_node) in enumerate(zip(token_ids, leaf_nodes)):
+            rows_no_eos[offset_no_eos] = row_index
+            cols_no_eos[offset_no_eos] = leaf_node
+            offset_no_eos += 1
+
+            ancestor = parent[leaf_node]
+            while ancestor != -1:
+                rows_no_eos[offset_no_eos] = row_index
+                cols_no_eos[offset_no_eos] = ancestor
+                offset_no_eos += 1
+                ancestor = parent[ancestor]
+
+            if not eos_mask[row_index]:
+                rows_with_eos[offset_with_eos] = row_index
+                cols_with_eos[offset_with_eos] = leaf_node
+                offset_with_eos += 1
+
+                ancestor = parent[leaf_node]
+                while ancestor != -1:
+                    rows_with_eos[offset_with_eos] = row_index
+                    cols_with_eos[offset_with_eos] = ancestor
+                    offset_with_eos += 1
+                    ancestor = parent[ancestor]
             else:
-                # EOS tokens: contribute directly to eos_node and root
-                rows_with_eos.append(i)
-                cols_with_eos.append(self.eos_node)
-                rows_with_eos.append(i)
-                cols_with_eos.append(self.root)
+                rows_with_eos[offset_with_eos] = row_index
+                cols_with_eos[offset_with_eos] = self.eos_node
+                offset_with_eos += 1
 
-            current = node
-            while current in parent:
-                ancestor = parent[current]
-                rows_no_eos.append(i)
-                cols_no_eos.append(ancestor)
-                if token not in self.eos_tokens:
-                    rows_with_eos.append(i)
-                    cols_with_eos.append(ancestor)
-                current = ancestor
+                rows_with_eos[offset_with_eos] = row_index
+                cols_with_eos[offset_with_eos] = self.root
+                offset_with_eos += 1
+
+        assert offset_no_eos == total_no_eos
+        assert offset_with_eos == total_with_eos
 
         # Build without_eos matrix
-        indices_no_eos = torch.tensor(
-            [rows_no_eos, cols_no_eos], dtype=torch.long, device=self.device
+        rows_no_eos_tensor = torch.tensor(
+            rows_no_eos, dtype=torch.long, device=self.device
         )
-        values_no_eos = torch.ones(len(rows_no_eos), device=self.device)
+        cols_no_eos_tensor = torch.tensor(
+            cols_no_eos, dtype=torch.long, device=self.device
+        )
+        indices_no_eos = torch.stack((rows_no_eos_tensor, cols_no_eos_tensor))
+        values_no_eos = torch.ones(total_no_eos, device=self.device)
         self.M_no_eos = torch.sparse_coo_tensor(
             indices_no_eos, values_no_eos, (len(leaf_indices), len(self.children))
         ).to_sparse_csr()
 
         # Build with_eos matrix
-        indices_with_eos = torch.tensor(
-            [rows_with_eos, cols_with_eos], dtype=torch.long, device=self.device
+        rows_with_eos_tensor = torch.tensor(
+            rows_with_eos, dtype=torch.long, device=self.device
         )
-        values_with_eos = torch.ones(len(rows_with_eos), device=self.device)
+        cols_with_eos_tensor = torch.tensor(
+            cols_with_eos, dtype=torch.long, device=self.device
+        )
+        indices_with_eos = torch.stack((rows_with_eos_tensor, cols_with_eos_tensor))
+        values_with_eos = torch.ones(total_with_eos, device=self.device)
         self.M_with_eos = torch.sparse_coo_tensor(
             indices_with_eos, values_with_eos, (len(leaf_indices), len(self.children))
         ).to_sparse_csr()
 
         # Keep the old matrix for backward compatibility
         self.M = self.M_no_eos
-        self.src_indices = torch.tensor(
-            rows_no_eos, dtype=torch.long, device=self.device
-        )
-        self.dst_indices = torch.tensor(
-            cols_no_eos, dtype=torch.long, device=self.device
-        )
+        self.src_indices = rows_no_eos_tensor
+        self.dst_indices = cols_no_eos_tensor
 
     def _preprocess_ws(self, batch_ws):
         """Preprocess weight sums for batch processing.

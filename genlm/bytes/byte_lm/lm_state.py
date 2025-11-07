@@ -1,6 +1,9 @@
+import asyncio
+from abc import ABC, abstractmethod
+from typing import Sequence
+
 from numpy import exp
 from arsenal import colors
-from abc import ABC, abstractmethod
 from arsenal.maths import sample_dict
 
 from ..util import escape
@@ -107,6 +110,52 @@ class StatefulByteLM(ABC):
             (LazyByteProbs): Log probabilities for next possible bytes
         """
         pass  # pragma: no cover
+
+    @staticmethod
+    async def advance_batch(
+        states: Sequence["StatefulByteLM"],
+        next_bytes: Sequence[int],
+    ) -> list["StatefulByteLM"]:
+        """Advance multiple byte-level states in parallel using a shared await.
+
+        Args:
+            states: Ordered collection of sentence states to advance.
+            next_bytes: Sequence of byte values aligned with ``states``.
+
+        Returns:
+            list[StatefulByteLM]: The advanced states, in the same order as the inputs.
+
+        Raises:
+            ValueError: If the two sequences have different lengths.
+        """
+
+        if len(states) != len(next_bytes):
+            raise ValueError(
+                "states and next_bytes must have the same length"
+            )
+
+        if not states:
+            return []
+
+        pruned_states = [state.prune() for state in states]
+        advanced_states = await asyncio.gather(
+            *(state << b for state, b in zip(pruned_states, next_bytes))
+        )
+
+        return list(advanced_states)
+
+
+async def advance_byte_states(
+    states: Sequence[StatefulByteLM],
+    next_bytes: Sequence[int],
+) -> list[StatefulByteLM]:
+    """Public helper that batches ``prune``/``<<`` across multiple states.
+
+    This is a thin wrapper over :meth:`StatefulByteLM.advance_batch` to provide a
+    module-level API.
+    """
+
+    return await StatefulByteLM.advance_batch(states, next_bytes)
 
     async def greedy(self, context, steps):
         """Performs greedy decoding for given number of steps.

@@ -1,13 +1,22 @@
-from .byte_lm import ByteBeamState, LazyTrieState, StatefulTokenizedLM, BeamParams
+from .byte_lm import (
+    BeamParams,
+    ByteBeamState,
+    LazyTrieState,
+    StatefulByteLM,
+    StatefulTokenizedLM,
+    advance_byte_states,
+)
 from .trie import TokenByteTrie, AsyncTokenByteTrie
 from .util import Chart
 
 __all__ = [
+    "BeamParams",
     "ByteBeamState",
     "LazyTrieState",
+    "StatefulByteLM",
     "StatefulTokenizedLM",
-    "BeamParams",
     "TokenByteTrie",
     "AsyncTokenByteTrie",
+    "advance_byte_states",
     "Chart",
 ]
