@@ -1,5 +1,17 @@
 
-so I get OOM, why?
+batch 1
+
+============================================================
+SUMMARY
+============================================================
+K     -logP(avg)      chars/s         batch 
+------------------------------------------------------------
+1     612.28          111.8           1     
+2     558.32          96.3            1     
+4     558.38          86.6            1     
+8     558.47          74.7            1     
+16    557.85          60.0            1     
+32    558.67          43.8            1     
 
 ============================================================
 SUMMARY
@@ -41,4 +53,53 @@ K     -logP(avg)      chars/s         batch
 python benchmark_k_values.py --batch-size 1
 python benchmark_k_values.py --batch-size 8 --trie-max-batch 256
 
-speculative decoding for charlm
+After numpy removing:
+on 1000
+============================================================
+SUMMARY
+============================================================
+K     -logP(avg)      chars/s         batch
+------------------------------------------------------------
+1     612.11          1005.8          16
+2     558.35          666.5           16
+4     558.85          425.0           16
+8     558.30          235.7           16
+16    558.35          124.3           16
+32    558.34          63.2            16
+
+
+on 4000
+
+============================================================
+SUMMARY
+============================================================
+K     -logP(avg)      chars/s         batch 
+------------------------------------------------------------
+1     1937.00         866.2           16    
+2     1756.54         546.7           16    
+4     1748.70         325.2           16    
+8     1747.44         167.7           16    
+16    1748.65         84.5            16    
+32    1748.47         42.6            16    
+
+
+- so I get OOM, why?
+
+- speculative decoding for charlm, coalescence
+
+all the changes, so now by default it runs 1 batch, how do I just generate not necessarily
+
+try batch size 1 speed, oom issues, error at the end from vllm
+
+QUESTIONS
+
+the tokenization is batched since the trie is batched?
+
+explain all changes done in detail
+
+explain batched trie
+
+why the .item()??
+ so now by default it runs 1 batch, how do I just generate not necessarily? 
+ For example, if I want to just run the algorithm normally with 4 beams like before, 
+ will it break or no? and what are the default batch sizes for sentences and trie?

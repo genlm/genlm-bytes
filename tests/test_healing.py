@@ -1,5 +1,6 @@
 import pytest
 import numpy as np
+import torch
 from types import SimpleNamespace
 
 from genlm.backend import load_model_by_name
@@ -210,7 +211,7 @@ async def test_adaptive_heal_skips_state_when_partial_path_invalid():
             )
             self.weight = 0.0
             self.node = 0
-            self.mass = np.zeros(len(children))
+            self.mass = torch.zeros(len(children), dtype=torch.float32)
             self.partial = [2]  # Missing path so _build_path_nodes -> None
             self.mode = "with_eos"
             self.lm_state = DummyLMState()
@@ -267,7 +268,10 @@ async def test_apply_commit_plan_invalid_eot_abort(monkeypatch):
             self.weight = weight
             self.mode = mode
             self.terminated = terminated
-            self._mass = mass
+            if mass is None:
+                self._mass = None
+            else:
+                self._mass = torch.tensor(mass, dtype=torch.float32)
 
         @property
         def mass(self):
@@ -280,7 +284,7 @@ async def test_apply_commit_plan_invalid_eot_abort(monkeypatch):
         async def materialize(self):
             if self._mass is None:
                 size = len(self.trie.trie.children)
-                self._mass = np.linspace(0.0, 1.0, size)
+                self._mass = torch.linspace(0.0, 1.0, size)
             return self
 
     monkeypatch.setattr(beam_module, "LazyTrieState", FakeLazyTrieState)

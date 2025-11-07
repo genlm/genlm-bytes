@@ -121,12 +121,13 @@ class LazyTrieState:
 
         if node := self.children[self.node].get(b):
             mass = self.mass
+            delta = (mass[node] - mass[self.node]).item()
             return LazyTrieState(
                 lm_state=self.lm_state,
                 trie=self.trie,
                 mass=mass,
                 node=node,
-                weight=self.weight + mass[node] - mass[self.node],
+                weight=self.weight + delta,
                 mode=self.mode,
                 terminated=b == EOS,
             )
@@ -140,12 +141,13 @@ class LazyTrieState:
         if self._extend is None:
             if eot_node := self.get_EOT():
                 mass = self.mass
+                delta = (mass[eot_node] - mass[self.node]).item()
                 self._extend = LazyTrieState(
                     lm_state=self.lm_state
                     << int(self.trie.trie.leaf2token_id[eot_node]),
                     trie=self.trie,
                     node=self.root,
-                    weight=self.weight + mass[eot_node] - mass[self.node],
+                    weight=self.weight + delta,
                     mode=self.mode,
                 )
         return self._extend
@@ -159,10 +161,10 @@ class LazyTrieState:
         """
         logps = np.full(258, -np.inf)  # 258 for EOT, EOS + 256 for normal bytes
         mass = self.mass
-        logZ = mass[self.node]
+        logZ = mass[self.node].item()
 
         for byte, node in self.actions().items():
-            logps[byte if byte is not None else 256] = mass[node] - logZ
+            logps[byte if byte is not None else 256] = mass[node].item() - logZ
 
         return LazyByteProbs(logps)
 
@@ -176,9 +178,8 @@ class LazyTrieState:
         """
         if self._mass is None:
             logp_next = await self.lm_state.logp_next()
-            log_mass = await self.trie.weight_sum(torch.exp(logp_next), self.mode)
-            mass = torch.log(log_mass)
-            self._mass = mass.cpu().numpy()
+            mass = await self.trie.weight_sum(torch.exp(logp_next), self.mode)
+            self._mass = torch.log(mass)
         return self
 
     def __repr__(self):

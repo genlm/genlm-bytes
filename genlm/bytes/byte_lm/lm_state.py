@@ -145,18 +145,6 @@ class StatefulByteLM(ABC):
         return list(advanced_states)
 
 
-async def advance_byte_states(
-    states: Sequence[StatefulByteLM],
-    next_bytes: Sequence[int],
-) -> list[StatefulByteLM]:
-    """Public helper that batches ``prune``/``<<`` across multiple states.
-
-    This is a thin wrapper over :meth:`StatefulByteLM.advance_batch` to provide a
-    module-level API.
-    """
-
-    return await StatefulByteLM.advance_batch(states, next_bytes)
-
     async def greedy(self, context, steps):
         """Performs greedy decoding for given number of steps.
 
@@ -199,3 +187,12 @@ async def advance_byte_states(
     async def cleanup(self):
         """Performs any necessary cleanup of the model state."""
         pass  # pragma: no cover
+
+
+async def advance_byte_states(
+    states: Sequence[StatefulByteLM],
+    next_bytes: Sequence[int],
+) -> list[StatefulByteLM]:
+    """Public helper that batches ``prune``/``<<`` across multiple states."""
+
+    return await StatefulByteLM.advance_batch(states, next_bytes)

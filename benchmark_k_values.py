@@ -237,8 +237,8 @@ def main():
     print(f"Using first {len(text)} characters from Wikitext2")
     print(f"Preview: {text[:100]}...")
 
-    # K_values = [1, 2, 4, 8, 16, 32]
-    K_values = [16]
+    K_values = [1, 2, 4, 8, 16, 32]
+    # K_values = [16]
 
     results = asyncio.run(
         run_benchmark(

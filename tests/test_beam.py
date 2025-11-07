@@ -70,7 +70,7 @@ async def test_weights(llm, prune_threshold):
                 for i in range(1, len(context)):
                     logps = await llm.next_token_logprobs(context[:i])
                     want += logps[context[i]]
-                want += candidate.mass[candidate.node]
+                want += candidate.mass[candidate.node].item()
                 assert np.isclose(want, candidate.weight, rtol=0.01)
             state = state.prune()
     finally:
@@ -173,7 +173,7 @@ async def test_can_generate_with_eos_in_prompt(llm):
 
         # Verify mass distribution behavior after generation
         post_gen_trie = post_generation_state.states[0].trie.trie
-        masses_gen = post_generation_state.states[0].mass
+        masses_gen = post_generation_state.states[0].mass.detach().cpu().numpy()
         assert not np.isnan(masses_gen[post_gen_trie.eos_node])
 
         # Verify EOS probability is accessible from logp_next

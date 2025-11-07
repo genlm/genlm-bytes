@@ -374,7 +374,9 @@ class TokenByteTrie:
             batch_ws = ws[i : i + self.max_batch_size]
             masses = torch.sparse.mm(batch_ws[:, self.token_ids], matrix)
             all_masses.append(masses)
-        return torch.cat(all_masses, dim=0)
+        result = torch.cat(all_masses, dim=0)
+        result[:, self.root] = ws.sum(dim=1)
+        return result
 
     def weight_max(self, ws):
         """Computes the maximum weight of all descendant leaf nodes (tokens) for each node in the trie.

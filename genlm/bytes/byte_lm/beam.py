@@ -308,7 +308,9 @@ class ByteBeamState(StatefulByteLM):
                 )
 
             # Base weight at the start of the current token
-            base_weight = state.weight - (state.mass[state.node] - state.mass[trie.root])
+            base_weight = state.weight - (
+                state.mass[state.node] - state.mass[trie.root]
+            ).item()
 
             # Build path nodes along partial_bytes from root
             path_nodes = self._build_path_nodes(children, trie.root, partial_bytes)
@@ -470,7 +472,7 @@ class ByteBeamState(StatefulByteLM):
         ancestor_node = path_nodes[chosen_k]
         eot_node = children[ancestor_node].get(trie.eot_token)
         token_id = int(trie.leaf2token_id[eot_node])
-        weight_after_eot = base_weight + (state.mass[eot_node] - state.mass[ancestor_node])
+        weight_after_eot = base_weight + (state.mass[eot_node] - state.mass[ancestor_node]).item()
 
         committed_state = LazyTrieState(
             lm_state=(state.lm_state << token_id),
@@ -502,9 +504,7 @@ class ByteBeamState(StatefulByteLM):
             nonlocal current_node, current_weight
             for byte_val in suffix_list[start:end]:
                 next_node = children[current_node].get(byte_val)
-                current_weight = current_weight + (
-                    committed_state.mass[next_node] - committed_state.mass[current_node]
-                )
+                current_weight = current_weight + (committed_state.mass[next_node] - committed_state.mass[current_node]).item()
                 current_node = next_node
 
         for commit_pos in plan_positions:
@@ -518,9 +518,7 @@ class ByteBeamState(StatefulByteLM):
                     )
                 return None
             token_id_at_pos = int(trie.leaf2token_id[eot_node_at_pos])
-            current_weight = current_weight + (
-                committed_state.mass[eot_node_at_pos] - committed_state.mass[current_node]
-            )
+            current_weight = current_weight + (committed_state.mass[eot_node_at_pos] - committed_state.mass[current_node]).item()
             # Advance LM and materialize new masses
             committed_state = LazyTrieState(
                 lm_state=(committed_state.lm_state << token_id_at_pos),
@@ -545,9 +543,7 @@ class ByteBeamState(StatefulByteLM):
         _follow_span(last_pos, len(suffix_list))
         # Advance by next_byte under current committed_state.mass
         child_node = children[current_node].get(next_byte)
-        final_weight = current_weight + (
-            committed_state.mass[child_node] - committed_state.mass[current_node]
-        )
+        final_weight = current_weight + (committed_state.mass[child_node] - committed_state.mass[current_node]).item()
         healed_state = LazyTrieState(
             lm_state=committed_state.lm_state,
             trie=state.trie,
