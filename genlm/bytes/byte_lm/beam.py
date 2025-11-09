@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from scipy.special import logsumexp as scipy_logsumexp
 from functools import cached_property
 from genlm.backend.tokenization.bytes import get_byte_vocab
+import torch
 
 from ..util import logsumexp, LazyByteProbs
 from ..trie import AsyncTokenByteTrie
@@ -37,6 +38,8 @@ class BeamParams:
     # single healing attempt. None means unlimited. Set to 0 to disable
     # multi-split behavior (i.e., single-split only).
     heal_max_splits: int | None = None
+    mass_dtype: torch.dtype | str | None = torch.float32
+    store_mass_cpu: bool = False
 
     def __post_init__(self):
         if self.prune_threshold < 0:
@@ -79,12 +82,18 @@ class ByteBeamState(StatefulByteLM):
         """
         # Handle EOS tokens
         trie_opts = trie_opts or {}
-        trie_opts["eos_tokens"] = params.eos_tokens
+        trie_opts["eos_tokens"] = list(params.eos_tokens) if params.eos_tokens else None
 
         async_trie = AsyncTokenByteTrie.from_vocab(
             get_byte_vocab(llm.tokenizer), **trie_opts
         )
-        state = LazyTrieState.initial(llm, async_trie, mode=TrieMode.WITH_EOS)
+        state = LazyTrieState.initial(
+            llm,
+            async_trie,
+            mode=TrieMode.WITH_EOS,
+            mass_dtype=params.mass_dtype,
+            store_mass_cpu=params.store_mass_cpu,
+        )
         return cls([await state.materialize()], params)
 
     def __iter__(self):
@@ -482,6 +491,8 @@ class ByteBeamState(StatefulByteLM):
             mass=None,
             mode=state.mode,
             terminated=False,
+            mass_dtype=state.mass_dtype,
+            store_mass_cpu=state.store_mass_cpu,
         )
         committed_state = await committed_state.materialize()
 
@@ -528,6 +539,8 @@ class ByteBeamState(StatefulByteLM):
                 mass=None,
                 mode=state.mode,
                 terminated=False,
+                mass_dtype=state.mass_dtype,
+                store_mass_cpu=state.store_mass_cpu,
             )
             committed_state = await committed_state.materialize()
             if verbose:
@@ -552,6 +565,8 @@ class ByteBeamState(StatefulByteLM):
             mass=committed_state.mass,
             mode=state.mode,
             terminated=(next_byte == EOS),
+            mass_dtype=state.mass_dtype,
+            store_mass_cpu=state.store_mass_cpu,
         )
         if verbose:
             byte_disp = self._format_byte(next_byte)
