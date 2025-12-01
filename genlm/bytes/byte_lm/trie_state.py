@@ -138,7 +138,7 @@ class LazyTrieState:
             (LazyTrieState|None): New state after consuming EOT, or None if not possible
         """
         if self._extend is None:
-            if eot_node := self.get_EOT():
+            if (eot_node := self.get_EOT()) is not None:
                 mass = self.mass
                 self._extend = LazyTrieState(
                     lm_state=self.lm_state

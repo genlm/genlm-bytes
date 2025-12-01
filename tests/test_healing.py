@@ -1,14 +1,13 @@
 import pytest
 import numpy as np
-from types import SimpleNamespace
 
 from genlm.backend import load_model_by_name
 from genlm.bytes import ByteBeamState, BeamParams
-from genlm.bytes.trie import TokenByteTrie
-import genlm.bytes.byte_lm.beam as beam_module
 
 
 TEXT = ". Boulter starred in the 2011 film Mercenaries directed by Paris Leonti ."
+VALKYRIA = "= Valkyria Chronicles III =Senjō no Valkyria 3 : Unrecorded Chronicles ( Japanese : 戦場のヴァルキュリア3 , li"
+AMAZING = "Wait... what?! That's amazing-truly incredible!"
 
 
 @pytest.fixture(scope="module")
@@ -16,7 +15,10 @@ def llm():
     return load_model_by_name("gpt2", backend="hf")
 
 
-async def _advance_bytes(llm, text: str, heal: bool, heal_max_backoff=None):
+async def _advance_bytes(
+    llm, text: str, heal: bool, heal_max_backoff=None, heal_max_splits=None
+):
+    """Helper to advance through text bytes and check if healing works."""
     eos_token = llm.byte_vocab[llm.tokenizer.eos_token_id]
     beam = await ByteBeamState.initial(
         llm,
@@ -25,6 +27,7 @@ async def _advance_bytes(llm, text: str, heal: bool, heal_max_backoff=None):
             eos_tokens=[eos_token],
             heal=heal,
             heal_max_backoff=heal_max_backoff,
+            heal_max_splits=heal_max_splits,
             verbose=True,
         ),
     )
@@ -37,32 +40,36 @@ async def _advance_bytes(llm, text: str, heal: bool, heal_max_backoff=None):
                 return False, idx, current
             current = next_beam
 
-        # Completed full prefix; tests will check EOS reachability on returned state
         return True, None, current
     finally:
         await beam.cleanup()
 
 
+# -------------------------
+# Core healing tests
+# -------------------------
+
+
 @pytest.mark.asyncio
-async def test_heal_disabled_k1_fails(llm):
+async def test_heal_disabled_fails(llm):
+    """Without healing, K=1 beam fails on this text."""
     ok, fail_idx, _ = await _advance_bytes(llm, TEXT, heal=False)
-    assert not ok, (
-        "Expected empty beam with heal disabled (K=1), but completed successfully"
-    )
+    assert not ok, "Expected failure with heal disabled"
     assert isinstance(fail_idx, int)
 
 
 @pytest.mark.asyncio
 async def test_heal_enabled_succeeds(llm):
-    ok, _, state = await _advance_bytes(llm, TEXT, heal=True, heal_max_backoff=None)
-    assert ok, "Healing enabled should complete the full prefix"
-    logp_next_all = await state.logp_next()
-    assert logp_next_all[257] > -np.inf, "EOS should be reachable after full prefix"
+    """With healing, K=1 beam completes the text."""
+    ok, _, state = await _advance_bytes(llm, TEXT, heal=True)
+    assert ok, "Healing should complete the text"
+    logp_next = await state.logp_next()
+    assert logp_next[257] > -np.inf, "EOS should be reachable"
 
 
 @pytest.mark.asyncio
-async def test_heal_max_backoff_zero_fails(llm):
-    # With zero backoff, we cannot move the boundary; expect failure similar to heal=False
+async def test_heal_max_backoff_limited_fails(llm):
+    """With limited backoff, healing fails on difficult text."""
     ok, fail_idx, _ = await _advance_bytes(llm, TEXT, heal=True, heal_max_backoff=2)
     assert not ok, "Expected failure with heal_max_backoff=2"
     assert isinstance(fail_idx, int)
@@ -70,88 +77,42 @@ async def test_heal_max_backoff_zero_fails(llm):
 
 @pytest.mark.asyncio
 async def test_heal_multisplit(llm):
-    # This case previously required multi-split healing around "Valkyria".
-    VALKYRIA = "= Valkyria Chronicles III =Senjō no Valkyria 3 : Unrecorded Chronicles ( Japanese : 戦場のヴァルキュリア3 , li"
-    ok, _, state = await _advance_bytes(llm, VALKYRIA, heal=True, heal_max_backoff=None)
-    assert ok, "Healing enabled should complete the full Valkyria prefix"
-    logp_next_all = await state.logp_next()
-    assert logp_next_all[257] > -np.inf, (
-        "EOS should be reachable after completing Valkyria prefix"
-    )
-
-
-# -------------------------
-# Targeted coverage for beam.py
-# -------------------------
-
-
-def _beam_min():
-    # Minimal beam just to access internal helpers
-    return ByteBeamState(states=[], params=BeamParams(K=1))
-
-
-def _make_wrapped_trie(children, decode=None, leaf2token_id=None, root=0, eot_token=None):
-    inner = SimpleNamespace(
-        children=children,
-        root=root,
-        eot_token=eot_token,
-        leaf2token_id=leaf2token_id or {},
-        decode=decode or [],
-    )
-    return SimpleNamespace(trie=inner)
-
-
-class DummyLMState:
-    def __init__(self, history=None):
-        self.history = tuple(history or ())
-
-    def __lshift__(self, token_id):
-        return DummyLMState(self.history + (token_id,))
-
-
-def test_plan_commits_empty_suffix():
-    trie = TokenByteTrie(decode=[b"a", b"b"])  # root children: 'a', 'b'
-    beam = _beam_min()
-
-    # S empty, next_byte reachable at root
-    plan = beam._plan_commits(trie, b"", ord("a"), heal_max_splits=None)
-    assert plan == []
-
-    # S empty, next_byte unreachable at root
-    plan = beam._plan_commits(trie, b"", ord("z"), heal_max_splits=None)
-    assert plan is None
-
-
-def test_plan_commits_no_last_eot():
-    # No token ends at 'a' or 'ab' => no EOT inside the segment 'ab'
-    trie = TokenByteTrie(decode=[b"abc", b"abx"])  # missing 'ab'
-    beam = _beam_min()
-
-    plan = beam._plan_commits(trie, b"abz", ord("z"), heal_max_splits=None)
-    assert plan is None
-
-
-def test_plan_commits_heal_max_splits():
-    # 'ab' exists, so last_eot_in_seg=2, but splits are disallowed
-    trie = TokenByteTrie(decode=[b"ab", b"abc"])  # EOT at 'ab'
-    beam = _beam_min()
-
-    plan = beam._plan_commits(trie, b"abz", ord("z"), heal_max_splits=0)
-    assert plan is None
-
-
-def test_plan_commits_until_reachable():
-    # After consuming S='a', to produce next_byte 'b' we must commit at 'a'
-    trie = TokenByteTrie(decode=[b"a", b"aa", b"b"])  # EOT at 'a'; 'b' only from root
-    beam = _beam_min()
-
-    plan = beam._plan_commits(trie, b"a", ord("b"), heal_max_splits=None)
-    assert plan == [1]
+    """Valkyria text requires multi-split healing."""
+    ok, _, state = await _advance_bytes(llm, VALKYRIA, heal=True)
+    assert ok, "Multi-split healing should complete Valkyria text"
+    logp_next = await state.logp_next()
+    assert logp_next[257] > -np.inf, "EOS should be reachable"
 
 
 @pytest.mark.asyncio
-async def test_prefill_and_prune_real_llm(llm):
-    # Real ByteBeamState interaction without fakes
+async def test_heal_max_splits_zero(llm):
+    """With max_splits=0, multi-split is disabled so VALKYRIA text fails."""
+    ok, fail_idx, _ = await _advance_bytes(llm, VALKYRIA, heal=True, heal_max_splits=0)
+    assert not ok, "Expected failure with max_splits=0 on VALKYRIA text"
+    assert isinstance(fail_idx, int)
+
+
+@pytest.mark.asyncio
+async def test_heal_amazing_text(llm):
+    """Test healing on text ending with '!' that requires extend() with EOT node 0.
+
+    This text exposed a bug where extend() failed when the EOT node was 0,
+    because `if eot_node := get_EOT():` treated 0 as falsy.
+    """
+    ok, _, state = await _advance_bytes(llm, AMAZING, heal=True)
+    assert ok, "Healing should complete the AMAZING text"
+    logp_next = await state.logp_next()
+    assert logp_next[257] > -np.inf, "EOS should be reachable after extend"
+
+
+# -------------------------
+# ByteBeamState API tests
+# -------------------------
+
+
+@pytest.mark.asyncio
+async def test_prefill_and_prune(llm):
+    """Test prefill and prune with real LLM."""
     state = await ByteBeamState.initial(llm, BeamParams(K=3))
     try:
         prefilled = await state.prefill(b"Hello ")
@@ -164,160 +125,274 @@ async def test_prefill_and_prune_real_llm(llm):
         await state.cleanup()
 
 
-def test_plan_commits_tail_no_eot():
-    # Only token 'abc', S='ab' has no EOT inside tail, next byte unreachable => None
-    trie = TokenByteTrie(decode=[b"abc"])  # Only full token at 'abc'
-    beam = _beam_min()
-    plan = beam._plan_commits(trie, b"ab", ord("z"), heal_max_splits=None)
-    assert plan is None
+@pytest.mark.asyncio
+async def test_logp_next(llm):
+    """Test logp_next returns valid probabilities."""
+    state = await ByteBeamState.initial(llm, BeamParams(K=1))
+    try:
+        prefilled = await state.prefill(b"The ")
+        logp = await prefilled.logp_next()
+
+        # logp_next returns LazyByteProbs, access via indexing
+        assert logp[ord("a")] <= 0
+        assert logp[ord(" ")] <= 0
+        assert logp[257] <= 0 or logp[257] == -np.inf
+    finally:
+        await state.cleanup()
 
 
-def test_format_byte_handles_type_error():
-    beam = _beam_min()
+# -------------------------
+# TokenHealer helper tests
+# -------------------------
 
-    class Weird:
+
+def test_format_byte():
+    """Test _format_byte helper."""
+    from genlm.bytes.byte_lm.heal import TokenHealer
+
+    healer = TokenHealer()
+
+    # Normal bytes
+    assert healer._format_byte(65) == "b'A'"
+    assert healer._format_byte(0) == "b'\\x00'"
+
+    # Edge cases handled gracefully
+    assert isinstance(healer._format_byte(-1), str)
+    assert isinstance(healer._format_byte(300), str)
+
+
+def test_format_byte_exception_path():
+    """Test _format_byte exception handling (covers lines 42-43)."""
+    from genlm.bytes.byte_lm.heal import TokenHealer
+
+    healer = TokenHealer()
+
+    # Pass something that will cause bytes() to fail
+    class BadInt:
+        def __index__(self):
+            raise ValueError("bad")
+
         def __str__(self):
-            return "weird-value"
+            return "bad-value"
 
-    assert beam._format_byte(Weird()) == "weird-value"
-
-
-def test_traverse_bytes_failure_returns_none():
-    beam = _beam_min()
-    children = [{1: 1}, {}]
-    assert beam._traverse_bytes(children, eot_token=None, start_node=0, bytes_seq=[1, 2]) == (
-        None,
-        None,
-    )
+    result = healer._format_byte(BadInt())
+    assert result == "bad-value"
 
 
-def test_build_path_nodes_invalid_returns_none():
-    beam = _beam_min()
-    children = [{1: 1}, {}]
-    assert beam._build_path_nodes(children, root=0, partial_bytes=[1, 2]) is None
+# -------------------------
+# Custom trie tests (no LM needed)
+# -------------------------
 
 
-@pytest.mark.asyncio
-async def test_adaptive_heal_skips_state_when_partial_path_invalid():
-    class DummyHealingState:
-        def __init__(self):
-            children = [{1: 1}, {}]
-            self.trie = _make_wrapped_trie(
-                children,
-                decode=[b"a"],
-                leaf2token_id={},
-                eot_token=None,
-            )
-            self.weight = 0.0
-            self.node = 0
-            self.mass = np.zeros(len(children))
-            self.partial = [2]  # Missing path so _build_path_nodes -> None
-            self.mode = "with_eos"
-            self.lm_state = DummyLMState()
+class MinimalLMState:
+    """Minimal LM state for testing - no real LLM needed."""
 
-        async def materialize(self):
-            return self
+    def __init__(self, vocab_size=10):
+        self.vocab_size = vocab_size
 
-    beam = ByteBeamState(states=[DummyHealingState()], params=BeamParams(K=1, heal_max_backoff=1))
-    healed = await beam._adaptive_heal(next_byte=1)
-    assert healed is None
+    def __lshift__(self, token_id):
+        return MinimalLMState(self.vocab_size)
 
+    async def logp_next(self):
+        import torch
 
-def test_find_heal_plan_no_plan_verbose():
-    trie = TokenByteTrie(decode=[b"a"], device="cpu")
-    children = trie.children
-    partial_bytes = [ord("a")]
-
-    beam = _beam_min()
-    path_nodes = beam._build_path_nodes(children, trie.root, partial_bytes)
-    chosen_k, plan = beam._find_heal_plan(
-        trie=trie,
-        children=children,
-        path_nodes=path_nodes,
-        partial_bytes=partial_bytes,
-        next_byte=ord("z"),
-        min_k=0,
-        verbose=True,
-    )
-    assert chosen_k is None
-    assert plan is None
-
-
-def test_plan_commits_tail_split_cap_in_phase_two():
-    trie = TokenByteTrie(decode=[b"a", b"b"], device="cpu")
-    beam = _beam_min()
-    plan = beam._plan_commits(trie, b"ab", ord("c"), heal_max_splits=1)
-    assert plan is None
-
-
-def test_plan_commits_replay_failure_returns_none():
-    trie = TokenByteTrie(decode=[b"ab", b"abcd"], device="cpu")
-    beam = _beam_min()
-    plan = beam._plan_commits(trie, b"abc", ord("z"), heal_max_splits=None)
-    assert plan is None
+        # Return uniform log probabilities
+        return torch.log(torch.ones(self.vocab_size) / self.vocab_size)
 
 
 @pytest.mark.asyncio
-async def test_apply_commit_plan_invalid_eot_abort(monkeypatch):
-    class FakeLazyTrieState:
-        def __init__(self, lm_state, trie, node, weight, mass, mode, terminated):
-            self.lm_state = lm_state
-            self.trie = trie
-            self.node = node
-            self.weight = weight
-            self.mode = mode
-            self.terminated = terminated
-            self._mass = mass
+async def test_healer_with_custom_trie_path_not_found():
+    """Test healing when partial path doesn't exist (covers line 91)."""
+    from genlm.bytes.trie import AsyncTokenByteTrie
+    from genlm.bytes.byte_lm.heal import TokenHealer
+    from genlm.bytes.byte_lm.trie_state import LazyTrieState
 
-        @property
-        def mass(self):
-            return self._mass
+    # Simple vocab
+    vocab = [b"a", b"ab", b"x"]
+    async_trie = AsyncTokenByteTrie.from_vocab(vocab, device="cpu")
 
-        @mass.setter
-        def mass(self, value):
-            self._mass = value
-
-        async def materialize(self):
-            if self._mass is None:
-                size = len(self.trie.trie.children)
-                self._mass = np.linspace(0.0, 1.0, size)
-            return self
-
-    monkeypatch.setattr(beam_module, "LazyTrieState", FakeLazyTrieState)
-
-    children = [
-        {None: 3, 7: 1},
-        {8: 2},
-        {},
-        {},
-    ]
-    trie = _make_wrapped_trie(
-        children,
-        decode=[b"T0"],
-        leaf2token_id={3: 0},
-        eot_token=None,
-    )
-    state = FakeLazyTrieState(
-        lm_state=DummyLMState(),
-        trie=trie,
-        node=2,
+    lm_state = MinimalLMState(vocab_size=len(vocab))
+    state = LazyTrieState(
+        lm_state=lm_state,
+        trie=async_trie,
+        node=async_trie.trie.root,
         weight=0.0,
-        mass=np.linspace(0.0, 0.3, len(children)),
-        mode="with_eos",
+        mass=None,
+        mode="without_eos",
         terminated=False,
     )
+    state = await state.materialize()
 
-    beam = _beam_min()
-    result = await beam._apply_commit_plan(
-        state=state,
-        trie=trie.trie,
-        children=children,
-        partial_bytes=[7, 8],
-        chosen_k=0,
-        plan_positions=[1],  # Invalid because there is no EOT at this node
-        next_byte=9,
-        base_weight=0.0,
-        path_nodes=[0, 1, 2],
-        verbose=True,
+    # Wrapper with invalid partial bytes (path doesn't exist)
+    class StateWithBadPartial:
+        def __init__(self, real_state):
+            self.trie = real_state.trie
+            self.weight = real_state.weight
+            self.node = real_state.node
+            self.mass = real_state.mass
+            self.mode = real_state.mode
+            self.lm_state = real_state.lm_state
+            self.partial = [ord("z"), ord("z")]  # 'z' doesn't exist in trie
+
+    bad_state = StateWithBadPartial(state)
+    healer = TokenHealer(verbose=True)
+
+    result = await healer._try_at_k(bad_state, k=1, next_byte=ord("x"))
+    assert result is None  # Path doesn't exist - covers line 91
+
+
+@pytest.mark.asyncio
+async def test_healer_with_custom_trie_cant_extend():
+    """Test when extend fails - no EOT at current position (covers lines 136-137)."""
+    from genlm.bytes.trie import AsyncTokenByteTrie
+    from genlm.bytes.byte_lm.heal import TokenHealer
+    from genlm.bytes.byte_lm.trie_state import LazyTrieState
+
+    # Vocab where "ab" exists but NOT "a" - so after consuming 'a' there's no EOT
+    vocab = [b"ab", b"x", b"y"]
+    async_trie = AsyncTokenByteTrie.from_vocab(vocab, device="cpu")
+
+    lm_state = MinimalLMState(vocab_size=len(vocab))
+    state = LazyTrieState(
+        lm_state=lm_state,
+        trie=async_trie,
+        node=async_trie.trie.root,
+        weight=0.0,
+        mass=None,
+        mode="without_eos",
+        terminated=False,
     )
-    assert result is None
+    state = await state.materialize()
+
+    class StateWithPartial:
+        def __init__(self, real_state, partial_bytes):
+            self.trie = real_state.trie
+            self.weight = real_state.weight
+            self.node = real_state.node
+            self.mass = real_state.mass
+            self.mode = real_state.mode
+            self.lm_state = real_state.lm_state
+            self.partial = partial_bytes
+
+    # partial = "abz" where 'z' doesn't exist after 'ab'
+    # At k=2: commit "ab", suffix = "z"
+    # After commit at root, try 'z' - not in trie, fail
+    # This doesn't hit lines 136-137 because 'z' fails immediately from root
+
+    # To hit lines 136-137, we need:
+    # 1. After commit, replay some suffix bytes successfully
+    # 2. Then a byte fails
+    # 3. extend() returns None (no EOT at current position)
+
+    # partial = "aba" where after committing "ab", we replay "a"
+    # 'a' is at root, goes to node-after-a
+    # At node-after-a, there's NO EOT (only "ab" is a token, not "a")
+    # If next byte in suffix fails, we try extend() -> None
+
+    # partial = "abaz" where:
+    # k=2: commit "ab", suffix = "az"
+    # Replay 'a' -> at node-after-a
+    # Replay 'z' -> fails at node-after-a, try extend() -> NO EOT -> return None
+
+    test_state = StateWithPartial(state, [ord("a"), ord("b"), ord("a"), ord("z")])
+    healer = TokenHealer(max_splits=None, verbose=True)
+
+    result = await healer.try_heal(test_state, next_byte=ord("x"))
+    assert result is None  # Should hit lines 136-137
+
+
+@pytest.mark.asyncio
+async def test_healer_with_custom_trie_cant_consume_after_extend():
+    """Test when byte can't be consumed even after extend (covers line 144)."""
+    from genlm.bytes.trie import AsyncTokenByteTrie
+    from genlm.bytes.byte_lm.heal import TokenHealer
+    from genlm.bytes.byte_lm.trie_state import LazyTrieState
+
+    # Vocab: "a", "ab" - 'a' exists so we CAN extend after consuming 'a'
+    # But 'z' isn't in trie at all
+    vocab = [b"a", b"ab", b"x"]
+    async_trie = AsyncTokenByteTrie.from_vocab(vocab, device="cpu")
+
+    lm_state = MinimalLMState(vocab_size=len(vocab))
+    state = LazyTrieState(
+        lm_state=lm_state,
+        trie=async_trie,
+        node=async_trie.trie.root,
+        weight=0.0,
+        mass=None,
+        mode="without_eos",
+        terminated=False,
+    )
+    state = await state.materialize()
+
+    class StateWithPartial:
+        def __init__(self, real_state, partial_bytes):
+            self.trie = real_state.trie
+            self.weight = real_state.weight
+            self.node = real_state.node
+            self.mass = real_state.mass
+            self.mode = real_state.mode
+            self.lm_state = real_state.lm_state
+            self.partial = partial_bytes
+
+    # partial = "aaz" where:
+    # k=1: commit "a", suffix = "az"
+    # Replay 'a' -> at node-after-a (has EOT for "a")
+    # Replay 'z' -> fails, try extend() -> succeeds (commit "a") -> at root
+    # Retry 'z' -> fails at root too! -> return None (line 144)
+
+    test_state = StateWithPartial(state, [ord("a"), ord("a"), ord("z")])
+    healer = TokenHealer(max_splits=None, verbose=True)
+
+    result = await healer.try_heal(test_state, next_byte=ord("x"))
+    assert result is None  # Should hit line 144
+
+
+@pytest.mark.asyncio
+async def test_healer_with_custom_trie_final_extend():
+    """Test final extend path (covers lines 155-163)."""
+    from genlm.bytes.trie import AsyncTokenByteTrie
+    from genlm.bytes.byte_lm.heal import TokenHealer
+    from genlm.bytes.byte_lm.trie_state import LazyTrieState
+
+    # Vocab: "a", "ab", "x"
+    # After consuming "ab", there's an EOT
+    # next_byte 'x' is at root but NOT after "ab"
+    vocab = [b"a", b"ab", b"x"]
+    async_trie = AsyncTokenByteTrie.from_vocab(vocab, device="cpu")
+
+    lm_state = MinimalLMState(vocab_size=len(vocab))
+    state = LazyTrieState(
+        lm_state=lm_state,
+        trie=async_trie,
+        node=async_trie.trie.root,
+        weight=0.0,
+        mass=None,
+        mode="without_eos",
+        terminated=False,
+    )
+    state = await state.materialize()
+
+    class StateWithPartial:
+        def __init__(self, real_state, partial_bytes):
+            self.trie = real_state.trie
+            self.weight = real_state.weight
+            self.node = real_state.node
+            self.mass = real_state.mass
+            self.mode = real_state.mode
+            self.lm_state = real_state.lm_state
+            self.partial = partial_bytes
+
+    # partial = "abab" where:
+    # k=2: commit "ab", suffix = "ab"
+    # Replay 'a' -> node-after-a
+    # Replay 'b' -> node-after-ab (has EOT for "ab")
+    # Try next_byte 'x' -> not at node-after-ab
+    # Try final extend() -> succeeds (commit "ab") -> at root
+    # Retry 'x' -> succeeds at root! -> lines 155-163
+
+    test_state = StateWithPartial(state, [ord("a"), ord("b"), ord("a"), ord("b")])
+    healer = TokenHealer(max_splits=None, verbose=True)
+
+    result = await healer.try_heal(test_state, next_byte=ord("x"))
+    assert result is not None  # Should succeed via final extend path
