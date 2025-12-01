@@ -26,6 +26,7 @@ class BeamParams:
             EOS tokens will terminate generation when sampled. Defaults to None
         heal (bool, optional): Whether to enable adaptive token healing. Defaults to True
         heal_max_backoff (int, optional): Maximum number of bytes to back off when healing. Defaults to None
+        heal_max_splits (int, optional): Maximum number of intra-suffix commits allowed during a single healing attempt. Defaults to None
     """
 
     K: int
