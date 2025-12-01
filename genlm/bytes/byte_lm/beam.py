@@ -8,7 +8,7 @@ from genlm.backend.tokenization.bytes import get_byte_vocab
 
 from ..util import logsumexp, LazyByteProbs
 from ..trie import AsyncTokenByteTrie
-from .trie_state import LazyTrieState, TrieMode, EOS
+from .trie_state import LazyTrieState, TrieMode
 from .lm_state import StatefulByteLM
 from .heal import TokenHealer
 
