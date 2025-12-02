@@ -48,7 +48,7 @@ class BeamParams:
         self.log_prune_threshold = (
             np.log(self.prune_threshold) if self.prune_threshold > 0 else -np.inf
         )
-        self.eos_tokens = set(self.eos_tokens) if self.eos_tokens else {}
+        self.eos_tokens = set(self.eos_tokens) if self.eos_tokens else set()
 
 
 class ByteBeamState(StatefulByteLM):
@@ -128,7 +128,7 @@ class ByteBeamState(StatefulByteLM):
             healed = await self._adaptive_heal(a)
             if healed is not None:
                 if self.params.verbose:
-                    print("[heal] Applied adaptive token healing inside __lshift__")
+                    print("[heal] Applied adaptive token healing")
                 return healed
 
         if self.params.verbose:

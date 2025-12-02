@@ -183,6 +183,8 @@ class LazyTrieState:
 
     def __repr__(self):
         context = colors.green % ("|" + escape(bytes(self.partial)))
+        if self.terminated:
+            context += colors.yellow % "<EOS>"
         return f"{self.weight:.2f}: {self.lm_state}" + context
 
     async def cleanup(self):
