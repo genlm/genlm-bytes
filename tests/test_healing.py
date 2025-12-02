@@ -401,7 +401,6 @@ async def test_healer_weight_calculation():
     #   - weight += (mass[node_after_x] - mass[root])
 
     trie = async_trie.trie
-    mass = state_after_a.mass
 
     # Find the EOT node for "a"
     node_after_a = trie.children[trie.root].get(ord("a"))
@@ -409,10 +408,11 @@ async def test_healer_weight_calculation():
     assert eot_node_for_a is not None
 
     # base_weight undoes the path from root to node_after_a
-    base_weight = state_after_a.weight - (mass[state_after_a.node] - mass[trie.root])
+    # base_weight = state_after_a.weight - (mass[state_after_a.node] - mass[trie.root])
 
     # weight after committing "a"
-    weight_after_commit = base_weight + (mass[eot_node_for_a] - mass[trie.root])
+    # mass = state_after_a.mass = [log(1/3), log(1/3), log(1/3)]
+    # weight_after_commit = base_weight + (mass[eot_node_for_a] - mass[trie.root])
 
     # After committing, we need the mass from the new LM state (after token 0)
     # The healed state has already materialized with new mass
