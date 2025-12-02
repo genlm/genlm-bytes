@@ -287,3 +287,18 @@ def escape(x):
     else:
         y = repr(x)[1:-1]
     return y.replace(" ", "␣")
+
+
+def format_byte(byte_val: int) -> str:
+    """Format a byte value for display/debugging.
+
+    Args:
+        byte_val: Integer byte value (0-255 for normal bytes, 256 for EOT, 257 for EOS)
+
+    Returns:
+        String representation like "b'A'" for normal bytes or "256" for special values
+    """
+    try:
+        return repr(bytes([byte_val])) if 0 <= byte_val <= 255 else str(byte_val)
+    except Exception:
+        return str(byte_val)

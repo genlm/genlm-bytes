@@ -2,7 +2,14 @@ import pytest
 import numpy as np
 import pandas as pd
 
-from genlm.bytes.util import LazyByteProbs, Chart, format_table, escape, logsumexp
+from genlm.bytes.util import (
+    LazyByteProbs,
+    Chart,
+    format_table,
+    escape,
+    logsumexp,
+    format_byte,
+)
 
 
 class TestLazyByteProbs:
@@ -402,3 +409,29 @@ class TestEscape:
         result = escape(0)
         expected = "\\x00"
         assert result == expected
+
+
+class TestFormatByte:
+    def test_normal_bytes(self):
+        assert format_byte(65) == "b'A'"
+        assert format_byte(0) == "b'\\x00'"
+
+    def test_edge_cases(self):
+        # Values outside 0-255 return str representation
+        assert isinstance(format_byte(-1), str)
+        assert isinstance(format_byte(300), str)
+        assert format_byte(256) == "256"
+        assert format_byte(257) == "257"
+
+    def test_exception_handling(self):
+        """Test format_byte exception handling"""
+
+        class BadInt:
+            def __index__(self):
+                raise ValueError("bad")
+
+            def __str__(self):
+                return "bad-value"
+
+        result = format_byte(BadInt())
+        assert result == "bad-value"
