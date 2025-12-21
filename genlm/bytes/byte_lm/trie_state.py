@@ -103,9 +103,24 @@ class LazyTrieState:
         """Returns possible byte transitions from current node."""
         return self.children[self.node]
 
-    def get_EOT(self):
-        """Returns the end-of-token node if available from current position in the trie."""
-        return self.children[self.node].get(self.trie.trie.eot_token)
+    def get_all_EOT(self):
+        """Returns all EOT edges from the current position in the trie.
+        
+        With duplicate tokens, multiple token IDs can map to the same byte string,
+        resulting in multiple EOT edges at the same node.
+
+        Returns:
+            list[tuple[int, int]]: List of (eot_node, token_id) tuples for each EOT edge.
+                Empty list if no EOT edges exist.
+        """
+        eot_token = self.trie.trie.eot_token
+        results = []
+        for key, node in self.children[self.node].items():
+            # EOT edges are tuples: (eot_token, token_id)
+            if isinstance(key, tuple) and key[0] == eot_token:
+                token_id = key[1]
+                results.append((node, token_id))
+        return results
 
     def __lshift__(self, b):
         """Transitions to a new state by consuming a byte.
@@ -131,23 +146,29 @@ class LazyTrieState:
                 terminated=b == EOS,
             )
 
-    def extend(self):
-        """Extends current state by consuming an end-of-token if possible.
+    def extend_all(self):
+        """Extends current state by consuming an end-of-token, returning all possible extensions.
+
+        With duplicate tokens (multiple token IDs with the same byte string), there can be
+        multiple valid extensions at the same position. Each extension corresponds to a
+        different token being committed, which affects future LM predictions.
 
         Returns:
-            (LazyTrieState|None): New state after consuming EOT, or None if not possible
+            list[LazyTrieState]: List of new states after consuming EOT, one per possible token.
+                Empty list if no EOT edges exist.
         """
         if self._extend is None:
-            if (eot_node := self.get_EOT()) is not None:
-                mass = self.mass
-                self._extend = LazyTrieState(
-                    lm_state=self.lm_state
-                    << int(self.trie.trie.leaf2token_id[eot_node]),
+            extensions = []
+            mass = self.mass
+            for eot_node, token_id in self.get_all_EOT():
+                extensions.append(LazyTrieState(
+                    lm_state=self.lm_state << int(token_id),
                     trie=self.trie,
                     node=self.root,
                     weight=self.weight + mass[eot_node] - mass[self.node],
                     mode=self.mode,
-                )
+                ))
+            self._extend = extensions
         return self._extend
 
     @cached_property
@@ -161,8 +182,23 @@ class LazyTrieState:
         mass = self.mass
         logZ = mass[self.node]
 
-        for byte, node in self.actions().items():
-            logps[byte if byte is not None else 256] = mass[node] - logZ
+        for key, node in self.actions().items():
+            # Handle different edge types:
+            # - tuple: (eot_token, token_id) for EOT edges to leaves
+            # - int 0-255: byte transitions
+            # - int 257: EOS transition
+            if isinstance(key, tuple):
+                # EOT edge - use index 256
+                # For duplicates, sum their masses using logaddexp
+                if logps[256] == -np.inf:
+                    logps[256] = mass[node] - logZ
+                else:
+                    logps[256] = np.logaddexp(logps[256], mass[node] - logZ)
+            elif isinstance(key, int):
+                logps[key] = mass[node] - logZ
+            # key is None should not happen with new edge format, but keep for safety
+            elif key is None:
+                logps[256] = mass[node] - logZ
 
         return LazyByteProbs(logps)
 

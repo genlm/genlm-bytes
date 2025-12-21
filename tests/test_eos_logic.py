@@ -4,20 +4,29 @@ import numpy as np
 
 from genlm.bytes.trie import TokenByteTrie, EOS
 from genlm.bytes.byte_lm.trie_state import TrieMode
+from genlm.backend.tokenization import Token
+
+
+def find_token_id_by_bytes(decode, target_bytes):
+    """Find the token ID for a given byte string in a list of Token objects."""
+    for token in decode:
+        if token.byte_string == target_bytes:
+            return token.token_id
+    raise ValueError(f"{target_bytes} is not in decode")
 
 
 @pytest.fixture(scope="module")
 def eos_trie():
     """Provides a pre-configured trie with multiple EOS tokens."""
     vocab = [
-        b"hello",  # 0
-        b"world",  # 1
-        b"!",  # 2 (EOS)
-        b"!!",  # 3
-        b".",  # 4 (EOS)
-        b"normal",  # 5
-        b"end",  # 6
-        b"</s>",  # 7 (EOS)
+        Token(token_id=0, byte_string=b"hello"),
+        Token(token_id=1, byte_string=b"world"),
+        Token(token_id=2, byte_string=b"!"),  # EOS
+        Token(token_id=3, byte_string=b"!!"),
+        Token(token_id=4, byte_string=b"."),  # EOS
+        Token(token_id=5, byte_string=b"normal"),
+        Token(token_id=6, byte_string=b"end"),
+        Token(token_id=7, byte_string=b"</s>"),  # EOS
     ]
     eos_tokens = [b"!", b".", b"</s>"]
     return TokenByteTrie(decode=vocab, eos_tokens=eos_tokens)
@@ -33,8 +42,10 @@ def test_trie_structure(eos_trie: TokenByteTrie):
     assert eos_trie.children[eos_trie.root].get(EOS) == eos_trie.eos_node
 
     # The original EOS tokens should still exist as leaf nodes in the trie for conditioning
-    for token in eos_trie.eos_tokens:
-        assert token in eos_trie.word2leaf
+    # Now word2leaf uses (bytes, token_id) as keys
+    for eos_token_bytes in eos_trie.eos_tokens:
+        token_id = find_token_id_by_bytes(eos_trie.decode, eos_token_bytes)
+        assert (eos_token_bytes, token_id) in eos_trie.word2leaf
 
 
 def test_without_eos_mode_mass_distribution(eos_trie: TokenByteTrie):
@@ -49,9 +60,9 @@ def test_without_eos_mode_mass_distribution(eos_trie: TokenByteTrie):
     node_for_exclamation = eos_trie.children[eos_trie.root][ord("!")]
 
     # The mass at this node should be the sum of probabilities of all tokens starting with "!", including "!" itself.
-    expected_mass = (
-        weights[eos_trie.decode.index(b"!")] + weights[eos_trie.decode.index(b"!!")]
-    )  # P("!") + P("!!")
+    idx_excl = find_token_id_by_bytes(eos_trie.decode, b"!")
+    idx_excl2 = find_token_id_by_bytes(eos_trie.decode, b"!!")
+    expected_mass = weights[idx_excl] + weights[idx_excl2]  # P("!") + P("!!")
     assert np.isclose(masses[node_for_exclamation].item(), expected_mass.item())
 
     # The EOS node should have zero mass in no_eos mode
@@ -70,7 +81,8 @@ def test_with_eos_mode_mass_distribution(eos_trie: TokenByteTrie):
     node_for_exclamation = eos_trie.children[eos_trie.root][ord("!")]
 
     # The mass at this node should ONLY be the sum of non-EOS tokens starting with "!"
-    expected_mass = weights[eos_trie.decode.index(b"!!")]  # Only P("!!")
+    idx_excl2 = find_token_id_by_bytes(eos_trie.decode, b"!!")
+    expected_mass = weights[idx_excl2]  # Only P("!!")
     assert np.isclose(masses[node_for_exclamation].item(), expected_mass.item())
 
 
@@ -83,11 +95,10 @@ def test_with_eos_mode_eos_node_aggregation(eos_trie: TokenByteTrie):
     masses = eos_trie.weight_sum(weights, mode=TrieMode.WITH_EOS)
 
     # The mass of the EOS node should be the sum of all defined EOS tokens
-    expected_eos_mass = (
-        weights[eos_trie.decode.index(b"!")]
-        + weights[eos_trie.decode.index(b".")]
-        + weights[eos_trie.decode.index(b"</s>")]
-    )
+    idx_excl = find_token_id_by_bytes(eos_trie.decode, b"!")
+    idx_dot = find_token_id_by_bytes(eos_trie.decode, b".")
+    idx_eos = find_token_id_by_bytes(eos_trie.decode, b"</s>")
+    expected_eos_mass = weights[idx_excl] + weights[idx_dot] + weights[idx_eos]
     actual_eos_mass = masses[eos_trie.eos_node]
 
     assert np.isclose(actual_eos_mass.item(), expected_eos_mass.item())

@@ -4,7 +4,6 @@ from arsenal import colors
 from dataclasses import dataclass
 from scipy.special import logsumexp as scipy_logsumexp
 from functools import cached_property
-from genlm.backend.tokenization.bytes import get_byte_vocab
 
 from ..util import logsumexp, LazyByteProbs
 from ..trie import AsyncTokenByteTrie
@@ -71,7 +70,7 @@ class ByteBeamState(StatefulByteLM):
         """Creates initial beam state.
 
         Args:
-            llm (StatefulTokenizedLM): Token-level language model to use.
+            llm (genlm.backend.AsyncLM): Token-level language model to use.
             params (BeamParams): Beam search parameters.
             trie_opts (dict, optional): Additional keyword arguments passed to
                 AsyncTokenByteTrie.from_vocab. For example, {"max_batch_size": 100}.
@@ -83,8 +82,9 @@ class ByteBeamState(StatefulByteLM):
         trie_opts = trie_opts or {}
         trie_opts["eos_tokens"] = params.eos_tokens
 
+        # Use llm.byte_vocab which contains Token objects (supports duplicate byte strings)
         async_trie = AsyncTokenByteTrie.from_vocab(
-            get_byte_vocab(llm.tokenizer), **trie_opts
+            llm.byte_vocab, **trie_opts
         )
         state = LazyTrieState.initial(llm, async_trie, mode=TrieMode.WITH_EOS)
         return cls([await state.materialize()], params)
@@ -162,18 +162,22 @@ class ByteBeamState(StatefulByteLM):
     async def extend(self, logZ):
         """Attempts to advance each candidate in the beam by a token (EOT).
 
-        For each candididate with EOT available, this ends the current token and
+        For each candidate with EOT available, this ends the current token and
         starts a new one in preparation for the next byte.
 
+        With duplicate tokens (multiple token IDs mapping to the same byte string),
+        a single state can have multiple extensions - one for each possible token.
+
         Args:
-            logZ (float): Current estimated of the partition function for pruning
+            logZ (float): Current estimate of the partition function for pruning
 
         Returns:
             (list[LazyTrieState]): New candidate states after extension
         """
         extends = []
         for state in self:
-            if new_state := state.extend():
+            # extend_all() returns all possible extensions (one per token at this position)
+            for new_state in state.extend_all():
                 logZ = np.logaddexp(logZ, new_state.weight)
                 extends.append(new_state)
 

@@ -6,6 +6,14 @@ from genlm.bytes import ByteBeamState, BeamParams
 from genlm.bytes.trie import EOS
 
 
+def find_token_id_by_bytes(byte_vocab, target_bytes):
+    """Find the token ID for a given byte string in a list of Token objects."""
+    for token in byte_vocab:
+        if token.byte_string == target_bytes:
+            return token.token_id
+    raise ValueError(f"{target_bytes} is not in byte_vocab")
+
+
 @pytest.fixture(scope="module")
 def llm():
     return load_model_by_name("gpt2-medium", backend="hf")
@@ -129,7 +137,7 @@ async def test_eos_termination(llm):
         new_state = await (state << EOS)
         assert all(state.terminated for state in new_state.states)
 
-        eos_token_id = llm.byte_vocab.index(b"!")
+        eos_token_id = find_token_id_by_bytes(llm.byte_vocab, b"!")
         lm_context = [llm.tokenizer.eos_token_id]
         target_weight = (await llm.next_token_logprobs(lm_context))[eos_token_id]
 
@@ -196,7 +204,7 @@ async def test_eos_logp_next_probability_sum(llm):
     try:
         first_state = beam.states[0]
         logps = await first_state.lm_state.logp_next()
-        eos_token_ids = [llm.byte_vocab.index(t) for t in eos_tokens]
+        eos_token_ids = [find_token_id_by_bytes(llm.byte_vocab, t) for t in eos_tokens]
         logps_eos = torch.logsumexp(logps[eos_token_ids], dim=0)
 
         logp_next = await beam.logp_next()

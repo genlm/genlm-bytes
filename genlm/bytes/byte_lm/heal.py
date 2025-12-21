@@ -2,6 +2,19 @@ from .trie_state import LazyTrieState
 from ..util import format_byte
 
 
+def _find_all_eot_edges(children, eot_token):
+    """Find all EOT edges in children dict. Returns list of (node, token_id) tuples.
+    
+    EOT edges are stored as tuple keys: (eot_token, token_id).
+    With duplicate tokens, multiple token IDs can map to the same byte string.
+    """
+    results = []
+    for key, node in children.items():
+        if isinstance(key, tuple) and key[0] == eot_token:
+            results.append((node, key[1]))
+    return results
+
+
 class TokenHealer:
     """Handles adaptive token healing for ByteBeamState.
     Token healing finds alternative tokenizations when the current tokenization
@@ -69,6 +82,9 @@ class TokenHealer:
     async def _try_at_k(self, state, trie, base_weight: float, k: int, next_byte: int):
         """Try healing by committing partial[:k], replaying partial[k:], then consuming next_byte.
 
+        With duplicate tokens, there can be multiple EOT edges at position k.
+        This method tries all of them until one succeeds.
+
         Args:
             state: The original state to heal from
             trie: The trie structure (state.trie.trie)
@@ -89,18 +105,49 @@ class TokenHealer:
             if node_at_k is None:
                 return None  # Path doesn't exist
 
-        # Check if there's an EOT at position k
-        eot_node = children[node_at_k].get(trie.eot_token)
-        if eot_node is None:
+        # Find all EOT edges at position k
+        # With duplicate tokens, multiple token IDs can map to the same byte string
+        eot_edges = _find_all_eot_edges(children[node_at_k], trie.eot_token)
+        if not eot_edges:
             if self.verbose:
                 print(f"[heal] k={k}: no EOT at {bytes(partial[:k])!r}")
             return None
 
-        # Commit at position k
+        # Try each possible EOT edge
+        for eot_node, eot_token_id in eot_edges:
+            result = await self._try_eot_at_k(
+                state, trie, base_weight, k, next_byte, eot_node, eot_token_id
+            )
+            if result is not None:
+                return result
+
+        return None
+
+    async def _try_eot_at_k(
+        self, state, trie, base_weight: float, k: int, next_byte: int,
+        eot_node: int, eot_token_id: int
+    ):
+        """Try healing with a specific EOT edge at position k.
+
+        Args:
+            state: The original state to heal from
+            trie: The trie structure (state.trie.trie)
+            base_weight: Precomputed weight after undoing current path
+            k: Backoff position
+            next_byte: The byte we want to consume
+            eot_node: The EOT node to commit
+            eot_token_id: The token ID for this EOT
+
+        Returns:
+            LazyTrieState if successful, None otherwise
+        """
+        partial = state.partial
+
+        # Commit at position k with this specific token
         weight_after_commit = base_weight + (
             state.mass[eot_node] - state.mass[trie.root]
         )
-        token_id = int(trie.leaf2token_id[eot_node])
+        token_id = int(eot_token_id)
 
         current = LazyTrieState(
             lm_state=(state.lm_state << token_id),
@@ -114,8 +161,10 @@ class TokenHealer:
         current = await current.materialize()
 
         if self.verbose:
+            # trie.decode contains Token objects, get byte_string for display
+            token_bytes = trie.decode[token_id].byte_string
             print(
-                f"[heal] k={k}: commit {trie.decode[token_id]!r}, w={weight_after_commit:.2f}"
+                f"[heal] k={k}: commit {token_bytes!r} (token_id={token_id}), w={weight_after_commit:.2f}"
             )
 
         # Replay suffix bytes then consume next_byte
@@ -134,26 +183,32 @@ class TokenHealer:
                     print(f"[heal] k={k}: hit max_splits={self.max_splits}")
                 return None
 
-            extended = current.extend()
-            if extended is None:
+            # extend_all() returns list of all possible extensions
+            extensions = current.extend_all()
+            if not extensions:
                 if self.verbose:
                     print(f"[heal] k={k}: can't extend at {bytes(current.partial)!r}")
                 return None
 
-            current = await extended.materialize()
-            splits_used += 1
-            if self.verbose:
-                print(f"[heal] k={k}: split #{splits_used}, w={current.weight:.2f}")
+            # Try each possible extension
+            for extended in extensions:
+                materialized = await extended.materialize()
+                splits_used += 1
+                if self.verbose:
+                    print(f"[heal] k={k}: split #{splits_used}, w={materialized.weight:.2f}")
 
-            # Retry consuming the byte after extend
-            next_state = current << b
-            if next_state is None:
+                # Retry consuming the byte after extend
+                next_state = materialized << b
+                if next_state is not None:
+                    current = next_state
+                    break  # Found a valid extension
+            else:
+                # None of the extensions worked
                 if self.verbose:
                     print(
                         f"[heal] k={k}: couldn't consume {format_byte(b)} even after extend"
                     )
                 return None
-            current = next_state
 
         if self.verbose:
             print(f"[heal] SUCCESS at k={k}: w={current.weight:.2f}")

@@ -67,8 +67,9 @@ class StatefulTokenizedLM:
         return await self.model.next_token_logprobs(self.context)
 
     def __repr__(self):
+        # byte_vocab contains Token objects, so we access .byte_string
         return colors.purple % (
-            "|".join([escape(self.model.byte_vocab[x]) for x in self.context])
+            "|".join([escape(self.model.byte_vocab[x].byte_string) for x in self.context])
         )
 
 

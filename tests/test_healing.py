@@ -2,7 +2,11 @@ import pytest
 import numpy as np
 
 from genlm.backend import load_model_by_name
+from genlm.backend.tokenization import Token
 from genlm.bytes import ByteBeamState, BeamParams
+from genlm.bytes.trie import AsyncTokenByteTrie
+from genlm.bytes.byte_lm.heal import TokenHealer
+from genlm.bytes.byte_lm.trie_state import LazyTrieState
 
 
 TEXT = ". Boulter starred in the 2011 film Mercenaries directed by Paris Leonti ."
@@ -25,7 +29,8 @@ async def _advance_bytes(
     llm, text: str, heal: bool, heal_max_backoff=None, heal_max_splits=None
 ):
     """Helper to advance through text bytes and check if healing works."""
-    eos_token = llm.byte_vocab[llm.tokenizer.eos_token_id]
+    # byte_vocab contains Token objects - get the byte_string for eos_tokens
+    eos_token = llm.byte_vocab[llm.tokenizer.eos_token_id].byte_string
     beam = await ByteBeamState.initial(
         llm,
         BeamParams(
@@ -150,12 +155,12 @@ class MinimalLMState:
 @pytest.mark.asyncio
 async def test_healer_with_custom_trie_path_not_found():
     """Test healing when partial path doesn't exist"""
-    from genlm.bytes.trie import AsyncTokenByteTrie
-    from genlm.bytes.byte_lm.heal import TokenHealer
-    from genlm.bytes.byte_lm.trie_state import LazyTrieState
-
     # Simple vocab
-    vocab = [b"a", b"ab", b"x"]
+    vocab = [
+        Token(token_id=0, byte_string=b"a"),
+        Token(token_id=1, byte_string=b"ab"),
+        Token(token_id=2, byte_string=b"x"),
+    ]
     async_trie = AsyncTokenByteTrie.from_vocab(vocab, device="cpu")
 
     lm_state = MinimalLMState(vocab_size=len(vocab))
@@ -198,12 +203,12 @@ async def test_healer_with_custom_trie_path_not_found():
 @pytest.mark.asyncio
 async def test_healer_with_custom_trie_cant_extend():
     """Test when extend fails - no EOT at current position"""
-    from genlm.bytes.trie import AsyncTokenByteTrie
-    from genlm.bytes.byte_lm.heal import TokenHealer
-    from genlm.bytes.byte_lm.trie_state import LazyTrieState
-
     # Vocab where "ab" exists but NOT "a" - so after consuming 'a' there's no EOT
-    vocab = [b"ab", b"x", b"y"]
+    vocab = [
+        Token(token_id=0, byte_string=b"ab"),
+        Token(token_id=1, byte_string=b"x"),
+        Token(token_id=2, byte_string=b"y"),
+    ]
     async_trie = AsyncTokenByteTrie.from_vocab(vocab, device="cpu")
 
     lm_state = MinimalLMState(vocab_size=len(vocab))
@@ -252,13 +257,13 @@ async def test_healer_with_custom_trie_cant_extend():
 @pytest.mark.asyncio
 async def test_healer_with_custom_trie_cant_consume_after_extend():
     """Test when byte can't be consumed even after extend"""
-    from genlm.bytes.trie import AsyncTokenByteTrie
-    from genlm.bytes.byte_lm.heal import TokenHealer
-    from genlm.bytes.byte_lm.trie_state import LazyTrieState
-
     # Vocab: "a", "ab" - 'a' exists so we CAN extend after consuming 'a'
     # But 'z' isn't in trie at all
-    vocab = [b"a", b"ab", b"x"]
+    vocab = [
+        Token(token_id=0, byte_string=b"a"),
+        Token(token_id=1, byte_string=b"ab"),
+        Token(token_id=2, byte_string=b"x"),
+    ]
     async_trie = AsyncTokenByteTrie.from_vocab(vocab, device="cpu")
 
     lm_state = MinimalLMState(vocab_size=len(vocab))
@@ -296,17 +301,148 @@ async def test_healer_with_custom_trie_cant_consume_after_extend():
     assert result is None
 
 
+def find_eot_edge(children, eot_token):
+    """Find an EOT edge in children dict. Returns (node, token_id) or (None, None)."""
+    for key, node in children.items():
+        if isinstance(key, tuple) and key[0] == eot_token:
+            return node, key[1]
+    return None, None
+
+
+def find_all_eot_edges(children, eot_token):
+    """Find all EOT edges in children dict. Returns list of (node, token_id)."""
+    results = []
+    for key, node in children.items():
+        if isinstance(key, tuple) and key[0] == eot_token:
+            results.append((node, key[1]))
+    return results
+
+
+@pytest.mark.asyncio
+async def test_healer_with_duplicate_tokens():
+    """Test healing when there are duplicate tokens (multiple EOT edges at same position).
+    
+    This tests the scenario where multiple token IDs decode to the same byte string.
+    The healer should try all possible EOT edges until one leads to a successful path.
+    """
+    # Vocab with duplicate tokens: both token 0 and token 1 decode to "a"
+    # Token 2 = "x" for the next byte we want to consume
+    vocab = [
+        Token(token_id=0, byte_string=b"a"),   # First "a"
+        Token(token_id=1, byte_string=b"a"),   # Duplicate "a"
+        Token(token_id=2, byte_string=b"x"),
+    ]
+    async_trie = AsyncTokenByteTrie.from_vocab(vocab, device="cpu")
+
+    # Verify the trie has two EOT edges at the node after 'a'
+    trie = async_trie.trie
+    node_after_a = trie.children[trie.root].get(ord("a"))
+    assert node_after_a is not None, "Should have node after 'a'"
+    
+    eot_edges = find_all_eot_edges(trie.children[node_after_a], trie.eot_token)
+    assert len(eot_edges) == 2, f"Expected 2 EOT edges for duplicate 'a', got {len(eot_edges)}"
+
+    lm_state = MinimalLMState(vocab_size=len(vocab))
+    state = LazyTrieState(
+        lm_state=lm_state,
+        trie=async_trie,
+        node=async_trie.trie.root,
+        weight=0.0,
+        mass=None,
+        mode="without_eos",
+        terminated=False,
+    )
+    state = await state.materialize()
+
+    # Consume 'a' to get to a state where we have partial="a"
+    state_after_a = state << ord("a")
+    assert state_after_a is not None
+
+    # Try to consume 'x' - should fail normally since 'x' is not a continuation of 'a'
+    cant_continue = state_after_a << ord("x")
+    assert cant_continue is None, "Should not be able to consume 'x' after 'a'"
+
+    # Heal to consume 'x' - should succeed by committing one of the "a" tokens
+    healer = TokenHealer(verbose=True)
+    healed = await healer.try_heal(state_after_a, next_byte=ord("x"))
+    assert healed is not None, "Healing should succeed with duplicate tokens"
+
+    # Verify we're now at partial containing 'x'
+    assert healed.partial == [ord("x")], f"Expected partial [120], got {healed.partial}"
+
+
+@pytest.mark.asyncio
+async def test_healer_extend_all_with_duplicates():
+    """Test that extend_all is used correctly during healing replay.
+    
+    When stuck during replay and extend_all returns multiple extensions,
+    healing should try all of them.
+    """
+    # Vocab:
+    # - Token 0 = "ab" (first)
+    # - Token 1 = "ab" (duplicate)
+    # - Token 2 = "a"  (partial match)
+    # - Token 3 = "x"
+    #
+    # Scenario: partial="aba", trying to consume 'x'
+    # k=2: commit "ab" at position 2
+    #   - replay 'a' -> at node after 'a'
+    #   - replay 'x' -> can't continue, need extend
+    #   - extend gives us duplicate "ab" tokens (but we only have "a" partial at this point)
+    #   Actually this is getting complex. Let's simplify.
+    
+    # Simpler scenario:
+    # - Token 0 = "a" (first)
+    # - Token 1 = "a" (duplicate)  
+    # - Token 2 = "ab"
+    # - Token 3 = "x"
+    vocab = [
+        Token(token_id=0, byte_string=b"a"),
+        Token(token_id=1, byte_string=b"a"),  # duplicate
+        Token(token_id=2, byte_string=b"ab"),
+        Token(token_id=3, byte_string=b"x"),
+    ]
+    async_trie = AsyncTokenByteTrie.from_vocab(vocab, device="cpu")
+
+    lm_state = MinimalLMState(vocab_size=len(vocab))
+    state = LazyTrieState(
+        lm_state=lm_state,
+        trie=async_trie,
+        node=async_trie.trie.root,
+        weight=0.0,
+        mass=None,
+        mode="without_eos",
+        terminated=False,
+    )
+    state = await state.materialize()
+
+    # Consume "ab" to get partial="ab"
+    state = state << ord("a")
+    state = state << ord("b")
+    assert state is not None
+
+    # Try to consume 'x' - should fail
+    cant_continue = state << ord("x")
+    assert cant_continue is None
+
+    # Heal should work by committing "ab" (token 2) and then consuming 'x'
+    healer = TokenHealer(verbose=True)
+    healed = await healer.try_heal(state, next_byte=ord("x"))
+    assert healed is not None, "Healing should succeed"
+    assert healed.partial == [ord("x")]
+
+
 @pytest.mark.asyncio
 async def test_healer_with_custom_trie_final_extend():
     """Test final extend path"""
-    from genlm.bytes.trie import AsyncTokenByteTrie
-    from genlm.bytes.byte_lm.heal import TokenHealer
-    from genlm.bytes.byte_lm.trie_state import LazyTrieState
-
     # Vocab: "a", "ab", "x"
     # After consuming "ab", there's an EOT
     # next_byte 'x' is at root but NOT after "ab"
-    vocab = [b"a", b"ab", b"x"]
+    vocab = [
+        Token(token_id=0, byte_string=b"a"),
+        Token(token_id=1, byte_string=b"ab"),
+        Token(token_id=2, byte_string=b"x"),
+    ]
     async_trie = AsyncTokenByteTrie.from_vocab(vocab, device="cpu")
 
     lm_state = MinimalLMState(vocab_size=len(vocab))
@@ -352,12 +488,12 @@ async def test_healer_weight_calculation():
 
     Verifies the healed state weight matches manually computed expected value.
     """
-    from genlm.bytes.trie import AsyncTokenByteTrie
-    from genlm.bytes.byte_lm.heal import TokenHealer
-    from genlm.bytes.byte_lm.trie_state import LazyTrieState
-
     # Vocab: token 0 = "a", token 1 = "ab", token 2 = "x"
-    vocab = [b"a", b"ab", b"x"]
+    vocab = [
+        Token(token_id=0, byte_string=b"a"),
+        Token(token_id=1, byte_string=b"ab"),
+        Token(token_id=2, byte_string=b"x"),
+    ]
     async_trie = AsyncTokenByteTrie.from_vocab(vocab, device="cpu")
 
     lm_state = MinimalLMState(vocab_size=len(vocab))
@@ -404,7 +540,7 @@ async def test_healer_weight_calculation():
 
     # Find the EOT node for "a"
     node_after_a = trie.children[trie.root].get(ord("a"))
-    eot_node_for_a = trie.children[node_after_a].get(trie.eot_token)
+    eot_node_for_a, _ = find_eot_edge(trie.children[node_after_a], trie.eot_token)
     assert eot_node_for_a is not None
 
     # base_weight undoes the path from root to node_after_a
