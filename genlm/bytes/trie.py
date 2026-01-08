@@ -109,7 +109,8 @@ class TokenByteTrie:
             
             # Use (word, token_id) as lookup key to allow duplicates
             lookup_key = (word, token_id)
-            if lookup_key in self.lookup:
+            if lookup_key in self.lookup:  # pragma: no cover
+                # This should never happen since Token objects have unique token_ids
                 raise ValueError(f"Duplicate token in vocabulary: {token}, lookup_key: {lookup_key}")
             self.lookup[lookup_key] = token_id
 
@@ -230,11 +231,10 @@ class TokenByteTrie:
                 if isinstance(letter, tuple):
                     # This is a leaf edge, prefix stays the same
                     node2prefix[y] = node2prefix[x]
-                elif letter is None:
-                    node2prefix[y] = node2prefix[x]
                 elif isinstance(letter, bytes):
                     node2prefix[y] = node2prefix[x] + list(letter)
                 else:
+                    # Regular byte transition (int)
                     node2prefix[y] = node2prefix[x] + [letter]
 
         self.node2prefix = node2prefix
@@ -510,10 +510,9 @@ class TokenByteTrie:
                 if isinstance(char, tuple):
                     eot_token, token_id = char
                     edge_label = f"EOT (ID: {token_id})"
-                elif char is not None:
-                    edge_label = str(char)
                 else:
-                    edge_label = "End-of-Token"
+                    # Regular byte transition (int) or EOS
+                    edge_label = str(char)
 
                 dot.edge(str(node_id), str(child_id), label=edge_label)
 

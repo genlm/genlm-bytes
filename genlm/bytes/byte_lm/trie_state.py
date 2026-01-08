@@ -219,7 +219,7 @@ class LazyTrieState:
             self._mass = mass.cpu().numpy()
         return self
 
-    def __repr__(self):
+    def __repr__(self):  # pragma: no cover
         context = colors.green % ("|" + escape(bytes(self.partial)))
         if self.terminated:
             context += colors.yellow % "<EOS>"

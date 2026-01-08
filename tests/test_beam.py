@@ -213,3 +213,122 @@ async def test_eos_logp_next_probability_sum(llm):
         np.testing.assert_allclose(eos_logp, logps_eos, rtol=1e-5)
     finally:
         await beam.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_trie_state_mass_not_materialized(llm):
+    """Test that accessing mass before materializing raises an error."""
+    from genlm.bytes.byte_lm.trie_state import LazyTrieState
+    from genlm.bytes.trie import AsyncTokenByteTrie
+
+    eos_token = llm.byte_vocab[llm.tokenizer.eos_token_id].byte_string
+    trie = AsyncTokenByteTrie.from_vocab(llm.byte_vocab, eos_tokens={eos_token})
+
+    try:
+        # Create a state without materializing
+        state = LazyTrieState.initial(llm, trie)
+
+        # Accessing mass before materialize should raise
+        with pytest.raises(ValueError, match="not yet materialized"):
+            _ = state.mass
+    finally:
+        await trie.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_trie_state_lshift_terminated(llm):
+    """Test that lshift on terminated state returns None."""
+    eos_token = llm.byte_vocab[llm.tokenizer.eos_token_id].byte_string
+    params = BeamParams(K=3, eos_tokens=[eos_token])
+    beam = await ByteBeamState.initial(llm, params)
+
+    try:
+        # Prefill and get a state
+        beam = await beam.prefill(b"Hello")
+        state = beam.states[0]
+
+        # Manually set terminated to True to test the branch
+        state.terminated = True
+
+        # lshift on terminated state should return None
+        result = state << ord("a")
+        assert result is None
+    finally:
+        await beam.cleanup()
+
+
+def test_lm_state_max_context_length(llm):
+    """Test that StatefulTokenizedLM truncates context when max_context_length is reached."""
+    from genlm.bytes.byte_lm.lm_state import StatefulTokenizedLM
+
+    # Create a state with max_context_length=3 and context already at limit
+    # This tests the truncation branch (line 55)
+    state = StatefulTokenizedLM.initial(llm, initial_context=[1, 2, 3], max_context_length=3)
+    assert len(state.context) == 3
+
+    # Adding a token should trigger truncation: [1, 2, 3] -> [2, 3] -> [2, 3, 4]
+    new_state = state << 4
+    # The truncation happens on the original state before creating new one
+    # New state context = truncated_context + [new_token] = [2, 3] + [4] = [2, 3, 4]
+    assert len(new_state.context) == 3
+    assert new_state.context == [2, 3, 4]
+
+
+@pytest.mark.asyncio
+async def test_logp_next_with_duplicate_eot_edges():
+    """Test that logp_next correctly aggregates probabilities for duplicate EOT edges."""
+    import numpy as np
+    from genlm.backend.tokenization import Token
+    from genlm.bytes.trie import AsyncTokenByteTrie
+    from genlm.bytes.byte_lm.trie_state import LazyTrieState
+
+    # Create vocab with duplicate byte strings (same prefix leads to multiple EOT edges)
+    vocab = [
+        Token(token_id=0, byte_string=b"a"),
+        Token(token_id=1, byte_string=b"a"),  # Duplicate - same byte string as token 0
+        Token(token_id=2, byte_string=b"b"),
+    ]
+
+    trie = AsyncTokenByteTrie.from_vocab(vocab)
+    try:
+        # Create mock lm_state and mass
+        class MockLMState:
+            async def logp_next(self):
+                # Return log probs for 3 tokens as tensor
+                return torch.log(torch.tensor([0.3, 0.4, 0.3]))
+
+        lm_state = MockLMState()
+
+        # Create LazyTrieState at root
+        state = LazyTrieState(
+            lm_state=lm_state,
+            trie=trie,
+            node=trie.trie.root,
+            weight=0.0,
+            mode=None,
+        )
+
+        # Materialize to get masses
+        state = await state.materialize()
+
+        # Advance to "a" node where both tokens 0 and 1 have EOT edges
+        advanced_state = state << ord("a")
+        assert advanced_state is not None
+
+        # Materialize the advanced state to have masses
+        advanced_state = await advanced_state.materialize()
+
+        # Access logp_next - this should trigger the logaddexp branch (line 196)
+        # because both token 0 and 1 are EOT edges at this position
+        logps = advanced_state.logp_next
+
+        # The EOT probability (index 256) should be valid (not -inf)
+        # indicating that both duplicate EOT edges contributed via logaddexp
+        eot_logp = logps[256]
+        assert eot_logp > -np.inf, "EOT logp should be valid when duplicate EOT edges exist"
+        
+        # Verify we're at a position with multiple EOT edges (the duplicate case)
+        eot_edges = advanced_state.get_all_EOT()
+        assert len(eot_edges) == 2, f"Expected 2 EOT edges for duplicates, got {len(eot_edges)}"
+    finally:
+        await trie.cleanup()
