@@ -2,12 +2,31 @@
 
 This model has duplicate tokens (multiple token IDs that decode to the same byte string),
 which previously caused errors. This test verifies that the fix works correctly.
+
+Note: These tests are skipped in CI because Gemma is a gated model requiring authentication.
+Run locally with `huggingface-cli login` after accepting the license at:
+https://huggingface.co/google/gemma-2-2b
 """
 
 import pytest
 import numpy as np
-from genlm.backend import load_model_by_name
-from genlm.bytes import ByteBeamState, BeamParams
+
+# Try to import and check if model is accessible
+try:
+    from genlm.backend import load_model_by_name
+    from genlm.bytes import ByteBeamState, BeamParams
+    
+    # Check if we can access the gated model (will fail without auth)
+    from huggingface_hub import model_info
+    model_info("google/gemma-2-2b")
+    GEMMA_AVAILABLE = True
+except Exception:
+    GEMMA_AVAILABLE = False
+
+pytestmark = pytest.mark.skipif(
+    not GEMMA_AVAILABLE,
+    reason="Gemma model not accessible (gated model requires authentication)"
+)
 
 
 @pytest.fixture(scope="module")
@@ -122,4 +141,3 @@ async def test_gemma_generation(gemma_llm):
     # Should be valid UTF-8 (or at least decodable)
     text = generated.decode("utf-8", errors="replace")
     assert isinstance(text, str)
-
