@@ -21,7 +21,7 @@ class TokenHealer:
     cannot consume the next byte. It works by:
     1. Trying different "backoff" positions k (commit partial[:k] as a token)
     2. Replaying the remaining bytes (partial[k:]) from fresh root
-    3. Using extend() when stuck to commit intermediate tokens
+    3. Using extend_all() when stuck to commit intermediate tokens
     4. Finally consuming the target next_byte
 
     Args:

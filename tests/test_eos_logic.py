@@ -8,7 +8,11 @@ from genlm.backend.tokenization import Token
 
 
 def find_token_id_by_bytes(decode, target_bytes):
-    """Find the token ID for a given byte string in a list of Token objects."""
+    """Find the first token ID for a given byte string in a list of Token objects.
+    
+    Note: Returns only the first match if multiple tokens share the same byte string.
+    This is fine for these tests since the test vocabularies have unique byte strings.
+    """
     for token in decode:
         if token.byte_string == target_bytes:
             return token.token_id
