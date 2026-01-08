@@ -262,7 +262,7 @@ def test_lm_state_max_context_length(llm):
     from genlm.bytes.byte_lm.lm_state import StatefulTokenizedLM
 
     # Create a state with max_context_length=3 and context already at limit
-    # This tests the truncation branch (line 55)
+    # This tests the truncation branch
     state = StatefulTokenizedLM.initial(llm, initial_context=[1, 2, 3], max_context_length=3)
     assert len(state.context) == 3
 
@@ -318,7 +318,7 @@ async def test_logp_next_with_duplicate_eot_edges():
         # Materialize the advanced state to have masses
         advanced_state = await advanced_state.materialize()
 
-        # Access logp_next - this should trigger the logaddexp branch (line 196)
+        # Access logp_next - this should trigger the logaddexp branch
         # because both token 0 and 1 are EOT edges at this position
         logps = advanced_state.logp_next
 
