@@ -196,7 +196,7 @@ class LazyTrieState:
                     logps[256] = np.logaddexp(logps[256], mass[node] - logZ)
             elif isinstance(key, int):
                 logps[key] = mass[node] - logZ
-            else:
+            else:  # pragma: no cover
                 raise ValueError(
                     f"Unexpected edge key type: {type(key).__name__} (value: {key!r}). "
                     f"Expected tuple (EOT edge) or int (byte/EOS transition)."

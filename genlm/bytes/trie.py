@@ -642,7 +642,7 @@ class AsyncTokenByteTrie:
                             )  # pragma: no cover
                         # MAX operations don't need mode, so use the original batch_weight_max
                         results = self.trie.batch_weight_max(ws_list)
-                    else:
+                    else:  # pragma: no cover
                         raise ValueError(f"Unknown trie operation: {op}")
 
                     for future, result in zip(futures, results):
