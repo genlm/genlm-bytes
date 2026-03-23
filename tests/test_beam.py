@@ -90,6 +90,19 @@ def test_invalid_prune_threshold():
         BeamParams(K=1, prune_threshold=-0.1)
 
 
+def test_beam_params_eos_tokens_deprecation():
+    """Test that the deprecated eos_tokens kwarg works and warns."""
+    with pytest.warns(DeprecationWarning, match="eos_tokens.*deprecated"):
+        params = BeamParams(K=3, eos_tokens=[b".", b"!"])
+    assert params.eos_byte_strings == {b".", b"!"}
+
+
+def test_beam_params_eos_tokens_and_byte_strings_conflict():
+    """Test that specifying both eos_tokens and eos_byte_strings raises."""
+    with pytest.raises(TypeError, match="Cannot specify both"):
+        BeamParams(K=3, eos_byte_strings=[b"."], eos_tokens=[b"!"])
+
+
 # EOS-specific tests
 @pytest.mark.asyncio
 async def test_eos_manual_configuration(llm):
