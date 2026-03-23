@@ -139,7 +139,7 @@ def test_weight_sum_single(decode):
 
 
 def test_weight_sum_single_atomic(decode):
-    trie = TokenByteTrie(decode=decode, atomic_tokens=[b"ab"])
+    trie = TokenByteTrie(decode=decode, atomic_byte_strings=[b"ab"])
     haves = trie.weight_sum(torch.tensor([0.1, 0.2, 0.2, 0.5]))
 
     # leaf_wants now uses (bytes, token_id) keys
@@ -307,14 +307,14 @@ async def test_eos_token_configuration():
         Token(token_id=1, byte_string=b"world"),
         Token(token_id=2, byte_string=b"<eos>"),
     ]
-    eos_tokens = [b"<eos>"]
+    eos_byte_strings = [b"<eos>"]
 
     # Test trie with EOS tokens
-    trie = TokenByteTrie(decode=vocab, eos_tokens=eos_tokens)
+    trie = TokenByteTrie(decode=vocab, eos_byte_strings=eos_byte_strings)
 
-    # EOS token should be in the eos_tokens set
-    assert b"<eos>" in trie.eos_tokens
-    assert len(trie.eos_tokens) == 1
+    # EOS token should be in the eos_byte_strings set
+    assert b"<eos>" in trie.eos_byte_strings
+    assert len(trie.eos_byte_strings) == 1
 
     # EOS token IDs should be populated
     assert len(trie.eos_token_ids) == 1
@@ -336,9 +336,9 @@ async def test_eos_dual_matrix_behavior():
         Token(token_id=1, byte_string=b"world"),
         Token(token_id=2, byte_string=b"<eos>"),
     ]
-    eos_tokens = [b"<eos>"]
+    eos_byte_strings = [b"<eos>"]
 
-    trie = TokenByteTrie(decode=vocab, eos_tokens=eos_tokens)
+    trie = TokenByteTrie(decode=vocab, eos_byte_strings=eos_byte_strings)
     weights = torch.tensor([0.3, 0.4, 0.3])  # hello, world, <eos>
 
     # Test no_eos mode (no EOS node mass)
@@ -371,9 +371,9 @@ async def test_eos_weight_sum_with_eos():
         Token(token_id=1, byte_string=b"world"),
         Token(token_id=2, byte_string=b"<eos>"),
     ]
-    eos_tokens = [b"<eos>"]
+    eos_byte_strings = [b"<eos>"]
 
-    trie = TokenByteTrie(decode=vocab, eos_tokens=eos_tokens)
+    trie = TokenByteTrie(decode=vocab, eos_byte_strings=eos_byte_strings)
     weights = torch.tensor([0.3, 0.4, 0.1])  # hello, world, <eos>
 
     # Test with_eos mode
@@ -397,14 +397,14 @@ async def test_eos_multiple_tokens():
         Token(token_id=2, byte_string=b"dog"),
         Token(token_id=3, byte_string=b"dogs"),
     ]
-    eos_tokens = [b"dog", b"dogs"]
+    eos_byte_strings = [b"dog", b"dogs"]
 
-    trie = TokenByteTrie(decode=vocab, eos_tokens=eos_tokens)
+    trie = TokenByteTrie(decode=vocab, eos_byte_strings=eos_byte_strings)
 
     # Should have both EOS tokens
-    assert len(trie.eos_tokens) == 2
-    assert b"dog" in trie.eos_tokens
-    assert b"dogs" in trie.eos_tokens
+    assert len(trie.eos_byte_strings) == 2
+    assert b"dog" in trie.eos_byte_strings
+    assert b"dogs" in trie.eos_byte_strings
 
     # Should have both EOS token IDs
     assert len(trie.eos_token_ids) == 2
@@ -431,24 +431,24 @@ def test_invalid_device():
         TokenByteTrie(decode=vocab, device="invalid")
 
 
-def test_invalid_eos_tokens():
+def test_invalid_eos_byte_strings():
     vocab = [
         Token(token_id=0, byte_string=b"a"),
         Token(token_id=1, byte_string=b"b"),
         Token(token_id=2, byte_string=b"c"),
     ]
     with pytest.raises(ValueError):
-        TokenByteTrie(decode=vocab, eos_tokens=[b"d"])
+        TokenByteTrie(decode=vocab, eos_byte_strings=[b"d"])
 
 
-def test_invalid_atomic_tokens():
+def test_invalid_atomic_byte_strings():
     vocab = [
         Token(token_id=0, byte_string=b"a"),
         Token(token_id=1, byte_string=b"b"),
         Token(token_id=2, byte_string=b"c"),
     ]
     with pytest.raises(ValueError):
-        TokenByteTrie(decode=vocab, atomic_tokens=[b"d"])
+        TokenByteTrie(decode=vocab, atomic_byte_strings=[b"d"])
 
 
 def test_duplicate_byte_strings_with_tokens():

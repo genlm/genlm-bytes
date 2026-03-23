@@ -113,11 +113,11 @@ class LazyTrieState:
             list[tuple[int, int]]: List of (eot_node, token_id) tuples for each EOT edge.
                 Empty list if no EOT edges exist.
         """
-        eot_token = self.trie.trie.eot_token
+        eot_sentinel = self.trie.trie.eot_sentinel
         results = []
         for key, node in self.children[self.node].items():
-            # EOT edges are tuples: (eot_token, token_id)
-            if isinstance(key, tuple) and key[0] == eot_token:
+            # EOT edges are tuples: (eot_sentinel, token_id)
+            if isinstance(key, tuple) and key[0] == eot_sentinel:
                 token_id = key[1]
                 results.append((node, token_id))
         return results
@@ -184,7 +184,7 @@ class LazyTrieState:
 
         for key, node in self.actions().items():
             # Handle different edge types:
-            # - tuple: (eot_token, token_id) for EOT edges to leaves
+            # - tuple: (eot_sentinel, token_id) for EOT edges to leaves
             # - int 0-255: byte transitions
             # - int 257: EOS transition
             if isinstance(key, tuple):

@@ -2,15 +2,15 @@ from .trie_state import LazyTrieState
 from ..util import format_byte
 
 
-def _find_all_eot_edges(children, eot_token):
+def _find_all_eot_edges(children, eot_sentinel):
     """Find all EOT edges in children dict. Returns list of (node, token_id) tuples.
-    
-    EOT edges are stored as tuple keys: (eot_token, token_id).
+
+    EOT edges are stored as tuple keys: (eot_sentinel, token_id).
     With duplicate tokens, multiple token IDs can map to the same byte string.
     """
     results = []
     for key, node in children.items():
-        if isinstance(key, tuple) and key[0] == eot_token:
+        if isinstance(key, tuple) and key[0] == eot_sentinel:
             results.append((node, key[1]))
     return results
 
@@ -107,7 +107,7 @@ class TokenHealer:
 
         # Find all EOT edges at position k
         # With duplicate tokens, multiple token IDs can map to the same byte string
-        eot_edges = _find_all_eot_edges(children[node_at_k], trie.eot_token)
+        eot_edges = _find_all_eot_edges(children[node_at_k], trie.eot_sentinel)
         if not eot_edges:
             if self.verbose:
                 print(f"[heal] k={k}: no EOT at {bytes(partial[:k])!r}")

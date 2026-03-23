@@ -32,8 +32,8 @@ def eos_trie():
         Token(token_id=6, byte_string=b"end"),
         Token(token_id=7, byte_string=b"</s>"),  # EOS
     ]
-    eos_tokens = [b"!", b".", b"</s>"]
-    return TokenByteTrie(decode=vocab, eos_tokens=eos_tokens)
+    eos_byte_strings = [b"!", b".", b"</s>"]
+    return TokenByteTrie(decode=vocab, eos_byte_strings=eos_byte_strings)
 
 
 def test_trie_structure(eos_trie: TokenByteTrie):
@@ -47,7 +47,7 @@ def test_trie_structure(eos_trie: TokenByteTrie):
 
     # The original EOS tokens should still exist as leaf nodes in the trie for conditioning
     # Now word2leaf uses (bytes, token_id) as keys
-    for eos_token_bytes in eos_trie.eos_tokens:
+    for eos_token_bytes in eos_trie.eos_byte_strings:
         token_id = find_token_id_by_bytes(eos_trie.decode, eos_token_bytes)
         assert (eos_token_bytes, token_id) in eos_trie.word2leaf
 

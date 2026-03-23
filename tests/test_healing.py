@@ -29,13 +29,13 @@ async def _advance_bytes(
     llm, text: str, heal: bool, heal_max_backoff=None, heal_max_splits=None
 ):
     """Helper to advance through text bytes and check if healing works."""
-    # byte_vocab contains Token objects - get the byte_string for eos_tokens
+    # byte_vocab contains Token objects - get the byte_string for eos_byte_strings
     eos_token = llm.byte_vocab[llm.tokenizer.eos_token_id].byte_string
     beam = await ByteBeamState.initial(
         llm,
         BeamParams(
             K=1,
-            eos_tokens=[eos_token],
+            eos_byte_strings=[eos_token],
             heal=heal,
             heal_max_backoff=heal_max_backoff,
             heal_max_splits=heal_max_splits,
@@ -301,19 +301,19 @@ async def test_healer_with_custom_trie_cant_consume_after_extend():
     assert result is None
 
 
-def find_eot_edge(children, eot_token):
+def find_eot_edge(children, eot_sentinel):
     """Find an EOT edge in children dict. Returns (node, token_id) or (None, None)."""
     for key, node in children.items():
-        if isinstance(key, tuple) and key[0] == eot_token:
+        if isinstance(key, tuple) and key[0] == eot_sentinel:
             return node, key[1]
     return None, None
 
 
-def find_all_eot_edges(children, eot_token):
+def find_all_eot_edges(children, eot_sentinel):
     """Find all EOT edges in children dict. Returns list of (node, token_id)."""
     results = []
     for key, node in children.items():
-        if isinstance(key, tuple) and key[0] == eot_token:
+        if isinstance(key, tuple) and key[0] == eot_sentinel:
             results.append((node, key[1]))
     return results
 
@@ -339,7 +339,7 @@ async def test_healer_with_duplicate_tokens():
     node_after_a = trie.children[trie.root].get(ord("a"))
     assert node_after_a is not None, "Should have node after 'a'"
     
-    eot_edges = find_all_eot_edges(trie.children[node_after_a], trie.eot_token)
+    eot_edges = find_all_eot_edges(trie.children[node_after_a], trie.eot_sentinel)
     assert len(eot_edges) == 2, f"Expected 2 EOT edges for duplicate 'a', got {len(eot_edges)}"
 
     lm_state = MinimalLMState(vocab_size=len(vocab))
@@ -540,7 +540,7 @@ async def test_healer_weight_calculation():
 
     # Find the EOT node for "a"
     node_after_a = trie.children[trie.root].get(ord("a"))
-    eot_node_for_a, _ = find_eot_edge(trie.children[node_after_a], trie.eot_token)
+    eot_node_for_a, _ = find_eot_edge(trie.children[node_after_a], trie.eot_sentinel)
     assert eot_node_for_a is not None
 
     # base_weight undoes the path from root to node_after_a

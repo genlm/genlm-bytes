@@ -1,4 +1,5 @@
 import asyncio
+import warnings
 import numpy as np
 from arsenal import colors
 from dataclasses import dataclass
@@ -21,7 +22,7 @@ class BeamParams:
         prune_threshold (float, optional): Probability threshold for pruning candidates.
             Candidates with probability below this are removed. Defaults to 0.0
         verbose (bool, optional): Whether to print the beam state at each step. Defaults to False
-        eos_tokens (list[bytes], optional): List of tokens that should be treated as EOS. When configured,
+        eos_byte_strings (list[bytes], optional): List of tokens that should be treated as EOS. When configured,
             EOS tokens will terminate generation when sampled. Defaults to None
         heal (bool, optional): Whether to enable adaptive token healing. Defaults to True
         heal_max_backoff (int, optional): Maximum number of bytes to back off when healing. Defaults to None
@@ -31,15 +32,29 @@ class BeamParams:
     K: int
     prune_threshold: float = 0.0
     verbose: bool = False
-    eos_tokens: list[bytes] = None
+    eos_byte_strings: list[bytes] = None
     heal: bool = True
     heal_max_backoff: int | None = None
     # Optional cap on how many intra-partial commits are allowed during a
     # single healing attempt. None means unlimited. Set to 0 to disable
     # multi-split behavior (i.e., single-split only).
     heal_max_splits: int | None = None
+    # Deprecated alias for eos_byte_strings
+    eos_tokens: list[bytes] = None
 
     def __post_init__(self):
+        if self.eos_tokens is not None:
+            if self.eos_byte_strings is not None:
+                raise TypeError(
+                    "Cannot specify both 'eos_byte_strings' and the deprecated 'eos_tokens'."
+                )
+            warnings.warn(
+                "'eos_tokens' is deprecated, use 'eos_byte_strings' instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            self.eos_byte_strings = self.eos_tokens
+            self.eos_tokens = None
         if self.prune_threshold < 0:
             raise ValueError(
                 f"prune_threshold must be non-negative, got {self.prune_threshold}"
@@ -47,7 +62,7 @@ class BeamParams:
         self.log_prune_threshold = (
             np.log(self.prune_threshold) if self.prune_threshold > 0 else -np.inf
         )
-        self.eos_tokens = set(self.eos_tokens) if self.eos_tokens else set()
+        self.eos_byte_strings = set(self.eos_byte_strings) if self.eos_byte_strings else set()
 
 
 class ByteBeamState(StatefulByteLM):
@@ -80,7 +95,7 @@ class ByteBeamState(StatefulByteLM):
         """
         # Handle EOS tokens
         trie_opts = trie_opts or {}
-        trie_opts["eos_tokens"] = params.eos_tokens
+        trie_opts["eos_byte_strings"] = params.eos_byte_strings
 
         # Use llm.byte_vocab which contains Token objects (supports duplicate byte strings)
         async_trie = AsyncTokenByteTrie.from_vocab(
