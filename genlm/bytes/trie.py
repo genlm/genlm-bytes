@@ -88,14 +88,14 @@ class TokenByteTrie:
         """
         # Check atomic_byte_strings against byte representations
         byte_set = set(self._byte_decode)
-        for token in atomic_byte_strings:
-            if token not in byte_set:
-                raise ValueError(f"Atomic token {token} not in vocabulary")
+        for bs in atomic_byte_strings:
+            if bs not in byte_set:
+                raise ValueError(f"Atomic byte string {bs!r} not in vocabulary")
 
         # Check eos_byte_strings against byte representations
-        for token in self.eos_byte_strings:
-            if token not in byte_set:
-                raise ValueError(f"EOS token {token} not in vocabulary")
+        for bs in self.eos_byte_strings:
+            if bs not in byte_set:
+                raise ValueError(f"EOS byte string {bs!r} not in vocabulary")
 
         self.word2leaf = {}
         self.children = [{}]  # First node is root

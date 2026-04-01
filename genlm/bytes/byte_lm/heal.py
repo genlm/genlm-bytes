@@ -190,10 +190,10 @@ class TokenHealer:
                     print(f"[heal] k={k}: can't extend at {bytes(current.partial)!r}")
                 return None
 
-            # Try each possible extension
+            # Try each possible extension (duplicates = same split, different token_id)
+            splits_used += 1
             for extended in extensions:
                 materialized = await extended.materialize()
-                splits_used += 1
                 if self.verbose:
                     print(f"[heal] k={k}: split #{splits_used}, w={materialized.weight:.2f}")
 
