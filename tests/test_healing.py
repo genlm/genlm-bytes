@@ -187,7 +187,7 @@ async def test_healer_with_custom_trie_path_not_found():
     trie = bad_state.trie.trie
     base_weight = bad_state.weight - (
         bad_state.mass[bad_state.node] - bad_state.mass[trie.root]
-    )
+    ).item()
 
     result = await healer._try_at_k(
         bad_state, trie, base_weight, k=1, next_byte=ord("x")

@@ -31,15 +31,16 @@ class LazyByteProbs:
             (float): Probability (or log probability) for the byte/EOT/EOS
         """
         if b is None:  # EOT
-            return self.ps[256]
+            val = self.ps[256]
         elif b == 257:  # EOS token
-            return self.ps[257]
+            val = self.ps[257]
         elif b >= 258:  # invalid index
             raise ValueError(
                 f"Invalid index: {b}. Must be between 0 and 257, or None for EOT."
             )
         else:  # Regular byte
-            return self.ps[b]
+            val = self.ps[b]
+        return val.item() if hasattr(val, 'item') else val
 
     def materialize(self):
         """Materializes the probability distribution into a Chart.
@@ -47,14 +48,18 @@ class LazyByteProbs:
         Returns:
             (Chart): Chart with probabilities for each byte/EOT/EOS
         """
+        # Move to CPU/numpy if needed for Chart population
+        ps = self.ps
+        if hasattr(ps, 'cpu'):
+            ps = ps.cpu().numpy()
         Q = Chart(-np.inf if self.log_space else 0)
         # Regular bytes (0-255)
-        for b, p in enumerate(self.ps[:256]):
-            Q[b] = p
+        for b, p in enumerate(ps[:256]):
+            Q[b] = float(p)
         # EOT (256)
-        Q[None] = self.ps[256]
+        Q[None] = float(ps[256])
         # EOS (257)
-        Q[257] = self.ps[257]
+        Q[257] = float(ps[257])
         return Q
 
     def pretty(self):

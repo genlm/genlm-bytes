@@ -49,7 +49,7 @@ class TokenHealer:
         trie = state.trie.trie
         # base_weight undoes current path contribution: weight + mass[root] - mass[node]
         # NOTE: mass[root] terms cancel, written this way to show undo current path contribution, add commit path
-        base_weight = state.weight - (state.mass[state.node] - state.mass[trie.root])
+        base_weight = state.weight - (state.mass[state.node] - state.mass[trie.root]).item()
 
         # Calculate how far back we're allowed to go
         min_k = (
@@ -99,7 +99,7 @@ class TokenHealer:
         # Commit at position k
         weight_after_commit = base_weight + (
             state.mass[eot_node] - state.mass[trie.root]
-        )
+        ).item()
         token_id = int(trie.leaf2token_id[eot_node])
 
         current = LazyTrieState(

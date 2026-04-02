@@ -1,8 +1,8 @@
 import asyncio
+import torch
 import numpy as np
 from arsenal import colors
 from dataclasses import dataclass
-from scipy.special import logsumexp as scipy_logsumexp
 from functools import cached_property
 from genlm.backend.tokenization.bytes import get_byte_vocab
 
@@ -152,12 +152,12 @@ class ByteBeamState(StatefulByteLM):
         for state in await self.extend(self.logZ):
             logqs.append(state.logp_next.ps + state.weight)
 
-        logqs = np.stack(logqs, axis=0)  # shape: (num_states, array_size)
+        logqs = torch.stack(logqs, dim=0)  # shape: (num_states, 258)
         # mask EOT positions of non-extended (EOT is at index 256)
-        logqs[: len(self), -2] = -np.inf
-        logps = scipy_logsumexp(logqs, axis=0)
+        logqs[: len(self), -2] = -float('inf')
+        logps = torch.logsumexp(logqs, dim=0)
 
-        return LazyByteProbs(logps - logsumexp(logps))
+        return LazyByteProbs(logps - torch.logsumexp(logps, dim=0))
 
     async def extend(self, logZ):
         """Attempts to advance each candidate in the beam by a token (EOT).
@@ -177,12 +177,12 @@ class ByteBeamState(StatefulByteLM):
                 logZ = np.logaddexp(logZ, new_state.weight)
                 extends.append(new_state)
 
-        coros = []
-        for state in extends:
-            if state.weight - logZ > self.params.log_prune_threshold:
-                coros.append(state.materialize())
+        to_materialize = [
+            state for state in extends
+            if state.weight - logZ > self.params.log_prune_threshold
+        ]
 
-        return await asyncio.gather(*coros)
+        return await LazyTrieState.batch_materialize(to_materialize)
 
     def prune(self):
         """Prunes beam to maintain beam width and probability threshold.
@@ -223,6 +223,8 @@ class ByteBeamState(StatefulByteLM):
         """Prefill the beam on a sequence of bytes.
 
         During prefilling, EOS tokens are treated as normal tokens and don't cause termination.
+        Uses batched prefill to minimize LLM calls by tracing trie paths ahead of time
+        and batching all materialization calls together.
 
         Args:
             bs (bytes): Byte sequence to prefill on
@@ -230,15 +232,179 @@ class ByteBeamState(StatefulByteLM):
         Returns:
             (ByteBeamState): New beam state after prefilling
         """
-        # Create no_eos beam for prefill (EOS tokens treated as normal)
         no_eos_beam = self.with_mode(TrieMode.WITHOUT_EOS)
-
-        # Do prefill operations on no_eos beam
-        for b in bs:
-            no_eos_beam = await (no_eos_beam.prune() << b)
-
-        # Return as with_eos beam (EOS tokens get special handling after prefill)
+        no_eos_beam = await no_eos_beam._batched_prefill(bs)
         return no_eos_beam.with_mode(TrieMode.WITH_EOS)
+
+    async def _batched_prefill(self, bs):
+        """Batched prefill: trace trie paths, batch LLM calls, propagate weights.
+
+        Instead of processing bytes one-at-a-time (each potentially triggering K LLM calls),
+        we trace all candidates through the trie for multiple bytes, identify all token
+        boundaries, then batch all LLM calls together.
+        """
+        if len(bs) == 0:
+            return self
+
+        trie = self.states[0].trie
+        trie_data = trie.trie
+        children = trie_data.children
+        eot = trie_data.eot_token
+        root = trie_data.root
+        K = self.params.K
+        candidate_budget = max(4 * K, 16)
+        mode = self.states[0].mode
+
+        # Candidates: list of (lm_state, node, weight, mass)
+        candidates = [
+            (s.lm_state, s.node, s.weight, s._mass)
+            for s in self.states
+        ]
+
+        pos = 0
+        while pos < len(bs):
+            # Phase 1: Trace through bytes without LLM calls.
+            # Each candidate is a 4-tuple: (lm_state, node, weight, mass)
+            # Weight is the parent's weight (deferred update). Mass is inherited
+            # from parent for descended states, or None for extended states.
+            # We also track: parent_node (for weight calc) and optionally mat_idx
+            # (index into needs_materialize for extended states).
+            needs_materialize = []
+            # needs_materialize entries: (lm_state, eot_node, parent_node, parent_weight, parent_mass)
+
+            # Traced candidates: 4-tuple + metadata for weight propagation
+            # Format: (lm_st, node, weight, mass, parent_node, mat_idx_or_None)
+            # mat_idx_or_None: None for descended, int for extended
+            traced = [(lm, nd, w, m, nd, None) for lm, nd, w, m in candidates]
+            chunk_start = pos
+
+            while pos < len(bs):
+                b = bs[pos]
+                next_traced = []
+
+                for lm_st, node, weight, mass, _pnode, _midx in traced:
+                    child = children[node].get(b)
+
+                    # Path A: Descend
+                    if child is not None:
+                        next_traced.append((lm_st, child, weight, mass, node, None))
+
+                    # Path B: Extend + descend from root
+                    eot_node = children[node].get(eot)
+                    if eot_node is not None:
+                        token_id = int(trie_data.leaf2token_id[eot_node])
+                        new_lm_st = lm_st << token_id
+                        mat_idx = len(needs_materialize)
+                        needs_materialize.append(
+                            (new_lm_st, eot_node, node, weight, mass)
+                        )
+                        root_child = children[root].get(b)
+                        if root_child is not None:
+                            next_traced.append(
+                                (new_lm_st, root_child, weight, None, node, mat_idx)
+                            )
+
+                if not next_traced:
+                    # All candidates stuck — healing needed
+                    break
+
+                # Budget enforcement
+                if len(next_traced) > candidate_budget:
+                    next_traced.sort(key=lambda c: -c[2])
+                    next_traced = next_traced[:candidate_budget]
+
+                traced = next_traced
+                pos += 1
+
+                if len(needs_materialize) > candidate_budget:
+                    break
+
+            # Phase 2: Batch materialize
+            mat_masses = [None] * len(needs_materialize)
+            if needs_materialize:
+                context_map = {}
+                for mat_idx, (lm_st, eot_nd, parent_nd, parent_w, parent_mass) in enumerate(needs_materialize):
+                    ctx_key = tuple(lm_st.context)
+                    if ctx_key not in context_map:
+                        context_map[ctx_key] = (lm_st, [])
+                    context_map[ctx_key][1].append(mat_idx)
+
+                unique_contexts = list(context_map.values())
+                logp_nexts = await asyncio.gather(
+                    *[lm_st.logp_next() for lm_st, _ in unique_contexts]
+                )
+
+                ws_batch = [torch.exp(logp) for logp in logp_nexts]
+                batch_masses = trie_data.batch_weight_sum(ws_batch, mode=mode)
+
+                for (_, mat_indices), mass_tensor in zip(unique_contexts, batch_masses):
+                    log_mass = torch.log(mass_tensor)
+                    for idx in mat_indices:
+                        mat_masses[idx] = log_mass
+
+            # Phase 3: Propagate weights
+            final_candidates = []
+            for lm_st, node, parent_weight, mass, parent_node, mat_idx in traced:
+                if mat_idx is None:
+                    # Descended: use inherited mass
+                    if mass is not None:
+                        weight = parent_weight + (mass[node] - mass[parent_node]).item()
+                    else:
+                        weight = parent_weight
+                    final_candidates.append((lm_st, node, weight, mass))
+                else:
+                    # Extended: compute EOT weight from parent mass, descent from new mass
+                    _, eot_nd, orig_parent_nd, _, parent_mass = needs_materialize[mat_idx]
+                    new_mass = mat_masses[mat_idx]
+                    if parent_mass is not None and new_mass is not None:
+                        eot_w = parent_weight + (parent_mass[eot_nd] - parent_mass[orig_parent_nd]).item()
+                        weight = eot_w + (new_mass[node] - new_mass[root]).item()
+                    else:
+                        weight = parent_weight
+                    final_candidates.append((lm_st, node, weight, new_mass))
+
+            # Prune
+            if final_candidates:
+                final_candidates.sort(key=lambda c: -c[2])
+                logZ_val = logsumexp([c[2] for c in final_candidates])
+                final_candidates = [
+                    c for c in final_candidates
+                    if c[2] - logZ_val > self.params.log_prune_threshold
+                ][:K]
+
+            candidates = final_candidates
+
+            # Empty beam: healing fallback — process remaining bytes sequentially
+            if not candidates:
+                beam = await self._rebuild_beam(
+                    [(s.lm_state, s.node, s.weight, s._mass) for s in self.states],
+                    trie, mode,
+                )
+                for b_val in bs[chunk_start:]:
+                    beam = await (beam.prune() << b_val)
+                return beam
+
+        return await self._rebuild_beam(candidates, trie, mode)
+
+    async def _rebuild_beam(self, candidates, trie, mode):
+        """Convert traced candidates back to LazyTrieState objects.
+
+        Materializes any candidates that lack mass tensors.
+        """
+        states = []
+        for lm_st, node, weight, mass in candidates:
+            state = LazyTrieState(
+                lm_state=lm_st,
+                trie=trie,
+                node=node,
+                weight=weight,
+                mass=mass,
+                mode=mode,
+            )
+            states.append(state)
+        # Materialize any states missing mass
+        await LazyTrieState.batch_materialize(states)
+        return ByteBeamState(states, self.params)
 
     async def cleanup(self):
         """Cleans up resources used by the candidates."""

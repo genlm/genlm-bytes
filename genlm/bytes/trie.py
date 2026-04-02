@@ -58,6 +58,7 @@ class TokenByteTrie:
         self.token_ids = torch.tensor(
             self.token_id_to_leaf[:, 0], dtype=torch.long, device=self.device
         )
+        self._build_children_tensor()
 
     def _build_trie(self, atomic_tokens):
         """Builds a trie data structure from the vocabulary.
@@ -197,6 +198,25 @@ class TokenByteTrie:
                     node2prefix[y] = node2prefix[x] + [letter]
 
         self.node2prefix = node2prefix
+
+    def _build_children_tensor(self):
+        """Builds a GPU tensor for fast child-node lookups.
+
+        Creates a tensor of shape (num_nodes, 259) where entry [node, byte] gives
+        the child node index, or -1 if no transition exists.
+        Indices 0-255 = byte values, 256 = EOT (None), 257 = EOS, 258 = unused.
+        """
+        num_nodes = len(self.children)
+        # Initialize with -1 (no transition)
+        ct = torch.full((num_nodes, 259), -1, dtype=torch.long, device=self.device)
+        for node in range(num_nodes):
+            for key, child in self.children[node].items():
+                if key is None:  # EOT
+                    ct[node, 256] = child
+                elif isinstance(key, int):  # byte value
+                    ct[node, key] = child
+                # skip non-int, non-None keys (e.g. bytes objects for atomic tokens)
+        self.children_tensor = ct
 
     def _build_parent_map(self):
         """Builds a mapping from each node to its parent node in the trie.

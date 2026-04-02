@@ -1,5 +1,5 @@
+import asyncio
 import torch
-import numpy as np
 from functools import cached_property
 from arsenal import colors
 from .lm_state import StatefulTokenizedLM
@@ -126,7 +126,7 @@ class LazyTrieState:
                 trie=self.trie,
                 mass=mass,
                 node=node,
-                weight=self.weight + mass[node] - mass[self.node],
+                weight=self.weight + (mass[node] - mass[self.node]).item(),
                 mode=self.mode,
                 terminated=b == EOS,
             )
@@ -145,7 +145,7 @@ class LazyTrieState:
                     << int(self.trie.trie.leaf2token_id[eot_node]),
                     trie=self.trie,
                     node=self.root,
-                    weight=self.weight + mass[eot_node] - mass[self.node],
+                    weight=self.weight + (mass[eot_node] - mass[self.node]).item(),
                     mode=self.mode,
                 )
         return self._extend
@@ -157,12 +157,18 @@ class LazyTrieState:
         Returns:
             (LazyByteProbs): Lazy log probability distribution over possible next bytes
         """
-        logps = np.full(258, -np.inf)  # 258 for EOT, EOS + 256 for normal bytes
         mass = self.mass
         logZ = mass[self.node]
+        trie = self.trie.trie
 
-        for byte, node in self.actions().items():
-            logps[byte if byte is not None else 256] = mass[node] - logZ
+        # Use precomputed children tensor for vectorized lookup
+        child_nodes = trie.children_tensor[self.node]  # (259,)
+        valid = child_nodes >= 0  # mask of valid transitions
+        valid_258 = valid[:258]  # only the 258 output positions (256 bytes + EOT + EOS)
+
+        logps = torch.full((258,), -float('inf'), device=mass.device)
+        valid_children = child_nodes[:258][valid_258]
+        logps[valid_258] = mass[valid_children] - logZ
 
         return LazyByteProbs(logps)
 
@@ -177,9 +183,51 @@ class LazyTrieState:
         if self._mass is None:
             logp_next = await self.lm_state.logp_next()
             log_mass = await self.trie.weight_sum(torch.exp(logp_next), self.mode)
-            mass = torch.log(log_mass)
-            self._mass = mass.cpu().numpy()
+            self._mass = torch.log(log_mass)
         return self
+
+    @staticmethod
+    async def batch_materialize(states):
+        """Batch-materialize multiple states, bypassing the async queue.
+
+        Collects all LLM calls into one batch, then does a single batched
+        trie weight_sum, avoiding per-state async queue overhead.
+
+        Args:
+            states (list[LazyTrieState]): States to materialize.
+
+        Returns:
+            list[LazyTrieState]: The same states, now materialized.
+        """
+        if not states:
+            return states
+
+        # Separate already-materialized from needing work
+        to_materialize = [s for s in states if s._mass is None]
+        if not to_materialize:
+            return states
+
+        # Batch LLM calls — asyncio.gather lets the backend batch them
+        logp_nexts = await asyncio.gather(
+            *[s.lm_state.logp_next() for s in to_materialize]
+        )
+
+        # Group by (trie, mode) for batched weight_sum
+        from collections import defaultdict
+        groups = defaultdict(list)
+        for i, state in enumerate(to_materialize):
+            key = (id(state.trie), state.mode)
+            groups[key].append((i, state, logp_nexts[i]))
+
+        for (trie_id, mode), group in groups.items():
+            trie = group[0][1].trie
+            ws_batch = [torch.exp(logp) for _, _, logp in group]
+            # Call batch_weight_sum directly on the underlying trie, bypassing async queue
+            batch_masses = trie.trie.batch_weight_sum(ws_batch, mode=mode)
+            for (idx, state, _), mass in zip(group, batch_masses):
+                state._mass = torch.log(mass)
+
+        return states
 
     def __repr__(self):
         context = colors.green % ("|" + escape(bytes(self.partial)))
