@@ -1,6 +1,7 @@
 import torch
 import asyncio
 import logging
+import warnings
 import numpy as np
 from enum import Enum
 from collections import defaultdict
@@ -45,15 +46,22 @@ class TokenByteTrie:
             eos_byte_strings (set[bytes], optional): Set of tokens that should be treated as EOS (End of Sequence).
             max_batch_size (int, optional): Maximum batch size for weight sum sparse matrix multiplication.
         """
-        # Validate that decode contains Token objects
         if not decode:
             raise ValueError("decode cannot be empty")
-        if not isinstance(decode[0], Token):
+        if Token.is_plain_bytes(decode[0]):
+            warnings.warn(
+                "Passing plain bytes to TokenByteTrie is deprecated. "
+                "Use Token objects from decode_vocab() instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            decode = [Token(token_id=i, byte_string=b) for i, b in enumerate(decode)]
+        elif not isinstance(decode[0], Token):
             raise TypeError(
                 f"decode must contain Token objects, got {type(decode[0]).__name__}. "
-                f"Use genlm.backend.tokenization.decode_vocab() to get Token objects from a tokenizer."
+                f"Use genlm.backend.tokenization.decode_vocab() to get Token objects."
             )
-        
+
         self.decode = decode
         self._byte_decode = [t.byte_string for t in decode]
         self.max_batch_size = max_batch_size
@@ -508,7 +516,7 @@ class TokenByteTrie:
             for char, child_id in children.items():
                 # Handle leaf edges: (eot_sentinel, token_id) tuples
                 if isinstance(char, tuple):
-                    eot_sentinel, token_id = char
+                    _, token_id = char
                     edge_label = f"EOT (ID: {token_id})"
                 else:
                     # Regular byte transition (int) or EOS

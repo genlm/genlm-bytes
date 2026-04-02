@@ -431,6 +431,15 @@ def test_invalid_device():
         TokenByteTrie(decode=vocab, device="invalid")
 
 
+def test_plain_bytes_decode_deprecation():
+    """Test that passing plain bytes to TokenByteTrie warns and converts."""
+    with pytest.warns(DeprecationWarning, match="Passing plain bytes to TokenByteTrie is deprecated"):
+        trie = TokenByteTrie(decode=[b"a", b"b", b"ab"])
+    assert all(isinstance(t, Token) for t in trie.decode)
+    assert trie.decode[0].token_id == 0
+    assert trie.decode[0].byte_string == b"a"
+
+
 def test_invalid_eos_byte_strings():
     vocab = [
         Token(token_id=0, byte_string=b"a"),
@@ -514,8 +523,8 @@ def test_duplicate_byte_strings_weight_sum():
 
 
 def test_requires_token_objects():
-    """Test that TokenByteTrie requires Token objects and rejects raw bytes."""
-    with pytest.raises(TypeError, match="decode must contain Token objects"):
+    """Test that TokenByteTrie warns for raw bytes and rejects non-bytes types."""
+    with pytest.warns(DeprecationWarning, match="Passing plain bytes"):
         TokenByteTrie(decode=[b"a", b"b", b"c"])
 
     with pytest.raises(TypeError, match="decode must contain Token objects"):
