@@ -12,7 +12,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 authors = [ { name = "Ben LeBrun", email = "benlebrun1@gmail.com" }, { name = "Tim Vieira"} ]
 dependencies = [
-    "genlm-backend @ git+https://github.com/genlm/genlm-backend.git@samuki/refactor-token-bytes",
+    "genlm-backend>=0.2.0",
     "arsenal",
     "IPython",
 ]
