@@ -24,7 +24,7 @@ def decode():
 
 @pytest.fixture(scope="module")
 def mock_llm():
-    return MockAsyncLM(AutoTokenizer.from_pretrained("gpt2"))
+    return MockAsyncLM(AutoTokenizer.from_pretrained("openai-community/gpt2"))
 
 
 @st.composite
@@ -433,7 +433,9 @@ def test_invalid_device():
 
 def test_plain_bytes_decode_deprecation():
     """Test that passing plain bytes to TokenByteTrie warns and converts."""
-    with pytest.warns(DeprecationWarning, match="Passing plain bytes to TokenByteTrie is deprecated"):
+    with pytest.warns(
+        DeprecationWarning, match="Passing plain bytes to TokenByteTrie is deprecated"
+    ):
         trie = TokenByteTrie(decode=[b"a", b"b", b"ab"])
     assert all(isinstance(t, Token) for t in trie.decode)
     assert trie.decode[0].token_id == 0

@@ -22,7 +22,7 @@ HEAL_TEST_CASES = [
 
 @pytest.fixture(scope="module")
 def llm():
-    return load_model_by_name("gpt2", backend="hf")
+    return load_model_by_name("openai-community/gpt2", backend="hf")
 
 
 async def _advance_bytes(
@@ -321,15 +321,15 @@ def find_all_eot_edges(children, eot_sentinel):
 @pytest.mark.asyncio
 async def test_healer_with_duplicate_tokens():
     """Test healing when there are duplicate tokens (multiple EOT edges at same position).
-    
+
     This tests the scenario where multiple token IDs decode to the same byte string.
     The healer should try all possible EOT edges until one leads to a successful path.
     """
     # Vocab with duplicate tokens: both token 0 and token 1 decode to "a"
     # Token 2 = "x" for the next byte we want to consume
     vocab = [
-        Token(token_id=0, byte_string=b"a"),   # First "a"
-        Token(token_id=1, byte_string=b"a"),   # Duplicate "a"
+        Token(token_id=0, byte_string=b"a"),  # First "a"
+        Token(token_id=1, byte_string=b"a"),  # Duplicate "a"
         Token(token_id=2, byte_string=b"x"),
     ]
     async_trie = AsyncTokenByteTrie.from_vocab(vocab, device="cpu")
@@ -338,9 +338,11 @@ async def test_healer_with_duplicate_tokens():
     trie = async_trie.trie
     node_after_a = trie.children[trie.root].get(ord("a"))
     assert node_after_a is not None, "Should have node after 'a'"
-    
+
     eot_edges = find_all_eot_edges(trie.children[node_after_a], trie.eot_sentinel)
-    assert len(eot_edges) == 2, f"Expected 2 EOT edges for duplicate 'a', got {len(eot_edges)}"
+    assert len(eot_edges) == 2, (
+        f"Expected 2 EOT edges for duplicate 'a', got {len(eot_edges)}"
+    )
 
     lm_state = MinimalLMState(vocab_size=len(vocab))
     state = LazyTrieState(
@@ -374,7 +376,7 @@ async def test_healer_with_duplicate_tokens():
 @pytest.mark.asyncio
 async def test_healer_extend_all_with_duplicates():
     """Test that extend_all is used correctly during healing replay.
-    
+
     When stuck during replay and extend_all returns multiple extensions,
     healing should try all of them.
     """
@@ -390,10 +392,10 @@ async def test_healer_extend_all_with_duplicates():
     #   - replay 'x' -> can't continue, need extend
     #   - extend gives us duplicate "ab" tokens (but we only have "a" partial at this point)
     #   Actually this is getting complex. Let's simplify.
-    
+
     # Simpler scenario:
     # - Token 0 = "a" (first)
-    # - Token 1 = "a" (duplicate)  
+    # - Token 1 = "a" (duplicate)
     # - Token 2 = "ab"
     # - Token 3 = "x"
     vocab = [

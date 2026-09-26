@@ -16,7 +16,7 @@ def find_token_id_by_bytes(byte_vocab, target_bytes):
 
 @pytest.fixture(scope="module")
 def llm():
-    return load_model_by_name("gpt2-medium", backend="hf")
+    return load_model_by_name("openai-community/gpt2-medium", backend="hf")
 
 
 @pytest.mark.asyncio
@@ -217,7 +217,9 @@ async def test_eos_logp_next_probability_sum(llm):
     try:
         first_state = beam.states[0]
         logps = await first_state.lm_state.logp_next()
-        eos_token_ids = [find_token_id_by_bytes(llm.byte_vocab, t) for t in eos_byte_strings]
+        eos_token_ids = [
+            find_token_id_by_bytes(llm.byte_vocab, t) for t in eos_byte_strings
+        ]
         logps_eos = torch.logsumexp(logps[eos_token_ids], dim=0)
 
         logp_next = await beam.logp_next()
@@ -276,7 +278,9 @@ def test_lm_state_max_context_length(llm):
 
     # Create a state with max_context_length=3 and context already at limit
     # This tests the truncation branch
-    state = StatefulTokenizedLM.initial(llm, initial_context=[1, 2, 3], max_context_length=3)
+    state = StatefulTokenizedLM.initial(
+        llm, initial_context=[1, 2, 3], max_context_length=3
+    )
     assert len(state.context) == 3
 
     # Adding a token should trigger truncation: [1, 2, 3] -> [2, 3] -> [2, 3, 4]
@@ -338,10 +342,14 @@ async def test_logp_next_with_duplicate_eot_edges():
         # The EOT probability (index 256) should be valid (not -inf)
         # indicating that both duplicate EOT edges contributed via logaddexp
         eot_logp = logps[256]
-        assert eot_logp > -np.inf, "EOT logp should be valid when duplicate EOT edges exist"
-        
+        assert eot_logp > -np.inf, (
+            "EOT logp should be valid when duplicate EOT edges exist"
+        )
+
         # Verify we're at a position with multiple EOT edges (the duplicate case)
         eot_edges = advanced_state.get_all_EOT()
-        assert len(eot_edges) == 2, f"Expected 2 EOT edges for duplicates, got {len(eot_edges)}"
+        assert len(eot_edges) == 2, (
+            f"Expected 2 EOT edges for duplicates, got {len(eot_edges)}"
+        )
     finally:
         await trie.cleanup()
